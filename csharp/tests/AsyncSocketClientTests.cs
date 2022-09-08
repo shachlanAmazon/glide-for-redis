@@ -8,7 +8,7 @@ public class AsyncSocketClientTests
     private async Task GetAndSetRandomValues(AsyncSocketClient client)
     {
         var key = Guid.NewGuid().ToString();
-        var value = Guid.NewGuid().ToString();
+        var value = new string('0', 4500);
         await client.SetAsync(key, value);
         var result = await client.GetAsync(key);
         Assert.That(result, Is.EqualTo(value));
@@ -68,32 +68,32 @@ public class AsyncSocketClientTests
 
     // This test is slow and hardly a unit test, but it caught timing and releasing issues in the past,
     // so it's being kept.
-    [Test, Timeout(2000)]
+    [Test, Timeout(100000)]
     public async Task ConcurrentOperationsWork()
     {
         var client = await AsyncSocketClient.CreateSocketClient("redis://localhost:6379");
         var operations = new List<Task>();
 
-        for (int i = 0; i < 100; ++i)
+        for (int i = 0; i < 1000; ++i)
         {
             var index = i;
             operations.Add(Task.Run(async () =>
             {
-                for (int i = 0; i < 100; ++i)
+                for (int i = 0; i < 100000; ++i)
                 {
-                    if ((i + index) % 2 == 0)
-                    {
-                        await GetAndSetRandomValues(client);
-                    }
-                    else
+                    if ((i + index) % 5 == 0)
                     {
                         var result = await client.GetAsync(Guid.NewGuid().ToString());
                         Assert.That(result, Is.EqualTo(null));
+                    }
+                    else
+                    {
+                        await GetAndSetRandomValues(client);
                     }
                 }
             }));
         }
 
-        Task.WaitAll(operations.ToArray(), 5000);
+        Task.WaitAll(operations.ToArray());
     }
 }
