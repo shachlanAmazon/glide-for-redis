@@ -1,4 +1,7 @@
+use num_derive::ToPrimitive;
+use num_traits::ToPrimitive;
 use redis::aio::MultiplexedConnection;
+use redis::socket_listener::{start_socket_listener, ClosingReason};
 use redis::{AsyncCommands, RedisResult};
 use std::{
     ffi::{c_void, CStr, CString},
@@ -38,6 +41,7 @@ fn create_connection_internal(
 }
 
 /// Creates a new connection to the given address. The success callback needs to copy the given string synchronously, since it will be dropped by Rust once the callback returns. All callbacks should be offloaded to separate threads in order not to exhaust the connection's thread pool.
+/// TODO make this asynchronous.
 #[no_mangle]
 pub extern "C" fn create_connection(
     address: *const c_char,
@@ -109,4 +113,89 @@ pub extern "C" fn get(connection_ptr: *const c_void, callback_index: usize, key:
             };
         }
     });
+}
+
+fn c_string_to_string(str: *const c_char) -> Option<String> {
+    let c_str: &CStr = unsafe { CStr::from_ptr(str) };
+    let str_slice: &str = c_str.to_str().ok()?;
+    Some(str_slice.to_owned())
+}
+
+#[repr(C)]
+#[derive(ToPrimitive)]
+enum CloseReason {
+    SocketClosed = 0,
+    FailedParsingInputs = 1,
+    CannotConnect = 2,
+    UnknownError = 3,
+    FailedInitialization = 4,
+}
+
+#[no_mangle]
+pub extern "C" fn start_socket_listener_wrapper(
+    address: *const c_char,
+    read_socket_name: *const c_char,
+    write_socket_name: *const c_char,
+    start_callback: unsafe extern "C" fn() -> (),
+    close_callback: unsafe extern "C" fn(usize) -> (),
+) {
+    let address = match c_string_to_string(address) {
+        Some(str) => str,
+        None => {
+            println!("Cannot parse address");
+            unsafe { close_callback(CloseReason::FailedParsingInputs.to_usize().unwrap()) };
+            return;
+        }
+    };
+
+    let client = match redis::Client::open(address) {
+        Ok(client) => client,
+        Err(err) => {
+            println!(
+                "Received error \"{:?}\" when trying to create a client",
+                err
+            );
+            unsafe { close_callback(CloseReason::CannotConnect.to_usize().unwrap()) };
+            return;
+        }
+    };
+    let read_socket_name = match c_string_to_string(read_socket_name) {
+        Some(str) => str,
+        None => {
+            println!("Cannot parse read_socket_name");
+            unsafe { close_callback(CloseReason::FailedParsingInputs.to_usize().unwrap()) };
+            return;
+        }
+    };
+    let write_socket_name = match c_string_to_string(write_socket_name) {
+        Some(str) => str,
+        None => {
+            println!("Cannot parse write_socket_name");
+            unsafe { close_callback(CloseReason::FailedParsingInputs.to_usize().unwrap()) };
+            return;
+        }
+    };
+    start_socket_listener(
+        client,
+        read_socket_name,
+        write_socket_name,
+        move || unsafe {
+            start_callback();
+        },
+        move |closing_reason| unsafe {
+            match closing_reason {
+                ClosingReason::ReadSocketClosed => {
+                    close_callback(CloseReason::SocketClosed.to_usize().unwrap())
+                }
+                ClosingReason::UnhandledError(err) => {
+                    println!("Received error \"{:?}\"", err);
+                    close_callback(CloseReason::UnknownError.to_usize().unwrap())
+                }
+                ClosingReason::FailedInitialization(err) => {
+                    println!("Received error \"{:?}\" during initialization", err);
+                    close_callback(CloseReason::FailedInitialization.to_usize().unwrap())
+                }
+            }
+        },
+    );
 }
