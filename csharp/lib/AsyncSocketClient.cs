@@ -227,6 +227,7 @@ namespace babushka
             Buffer.BlockCopy(encodedVal, 0, target, offset, encodedVal.Length);
         }
 
+        private readonly SemaphoreSlim toLock = new(1, 1);
         private async Task WriteToSocket(string key, string? value, RequestType requestType, int callbackIndex)
         {
             var encoding = Encoding.UTF8;
@@ -245,7 +246,9 @@ namespace babushka
                 WriteUint32ToBuffer((UInt32)firstStringLength, buffer, HEADER_LENGTH_IN_BYTES);
             }
 
+            await toLock.WaitAsync();
             var sentBytes = await this.writeSocket.SendAsync(new ArraySegment<byte>(buffer, 0, (int)length), SocketFlags.None);
+            toLock.Release();
             if (sentBytes != length)
             {
                 throw new Exception($"Wanted to write {length} bytes, actually wrote {sentBytes}");
