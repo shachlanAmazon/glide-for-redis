@@ -199,6 +199,7 @@ const receivedOptions = commandLineArgs(optionDefinitions);
 
 Promise.resolve() // just added to clean the indentation of the rest of the calls
     .then(() => main(100000, 1, 100))
+    .then(() => main(100000, 1, 40000))
     .then(() => print_results(receivedOptions.resultsFile))
     .then(() => {
         process.exit(0);

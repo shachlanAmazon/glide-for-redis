@@ -1,6 +1,6 @@
-use napi::bindgen_prelude::ToNapiValue;
+use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
-use napi::{Error, JsFunction, Result, Status};
+use napi::{Error, JsFunction, JsTypedArray, Result, Status};
 use napi_derive::napi;
 use redis::aio::MultiplexedConnection;
 use redis::socket_listener::headers::HEADER_END;
@@ -8,6 +8,32 @@ use redis::socket_listener::{start_socket_listener, ClosingReason};
 use redis::{AsyncCommands, RedisError, RedisResult};
 use std::str;
 use tokio::task;
+
+struct RawSendPointer {
+    send_pointer: usize,
+}
+
+impl RawSendPointer {
+    fn as_ptr<T>(&self) -> *const T {
+        self.send_pointer as *const T
+    }
+}
+
+impl FromNapiValue for RawSendPointer {
+    unsafe fn from_napi_value(
+        env: napi::sys::napi_env,
+        napi_val: napi::sys::napi_value,
+    ) -> Result<Self> {
+        let typed_array =
+            <JsTypedArray as napi::bindgen_prelude::FromNapiValue>::from_napi_value(env, napi_val)?
+                .into_value()?;
+        let offset = typed_array.byte_offset;
+        let pointr = typed_array.arraybuffer.into_value()?.as_ptr();
+        Ok(RawSendPointer {
+            send_pointer: pointr as usize + offset,
+        })
+    }
+}
 
 #[napi]
 struct AsyncClient2Strings {}
