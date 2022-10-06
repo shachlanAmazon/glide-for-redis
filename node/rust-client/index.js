@@ -218,10 +218,9 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { RequestType, ResponseType, HEADER_LENGTH_IN_BYTES, AsyncClient, StartSocketConnection } = nativeBinding
+const { AsyncClient2Strings, AsyncClientReceiveString, AsyncClientReturnString, AsyncClient0String } = nativeBinding
 
-module.exports.RequestType = RequestType
-module.exports.ResponseType = ResponseType
-module.exports.HEADER_LENGTH_IN_BYTES = HEADER_LENGTH_IN_BYTES
-module.exports.AsyncClient = AsyncClient
-module.exports.StartSocketConnection = StartSocketConnection
+module.exports.AsyncClient2Strings = AsyncClient2Strings
+module.exports.AsyncClientReceiveString = AsyncClientReceiveString
+module.exports.AsyncClientReturnString = AsyncClientReturnString
+module.exports.AsyncClient0String = AsyncClient0String

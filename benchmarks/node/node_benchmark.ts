@@ -1,6 +1,11 @@
 import percentile from "percentile";
 import { createClient } from "redis";
-import { AsyncClient, SocketConnection } from "babushka-rs";
+import {
+    AsyncClient2Strings,
+    AsyncClientReceiveString,
+    AsyncClientReturnString,
+    AsyncClient0String,
+} from "babushka-rs";
 import commandLineArgs from "command-line-args";
 import { writeFileSync } from "fs";
 
@@ -142,35 +147,46 @@ async function main(
     data_size: number
 ) {
     const data = generate_value(data_size);
-    const babushka_client = await AsyncClient.CreateConnection(ADDRESS);
-    await run_client(
-        babushka_client,
-        "babushka FFI",
-        total_commands,
-        num_of_concurrent_tasks,
-        data_size,
-        data
-    );
-
-    const babushka_socket_client = await SocketConnection.CreateConnection(
+    const babushka_client1 = await AsyncClient2Strings.CreateConnection(
         ADDRESS
     );
     await run_client(
-        babushka_socket_client,
-        "babushka socket",
+        babushka_client1,
+        "AsyncClient2Strings",
         total_commands,
         num_of_concurrent_tasks,
         data_size,
         data
     );
-    babushka_socket_client.dispose();
-    await new Promise((resolve) => setTimeout(resolve, 100));
 
-    const node_redis_client = createClient({ url: ADDRESS });
-    await node_redis_client.connect();
+    const babushka_client2 = await AsyncClientReceiveString.CreateConnection(
+        ADDRESS
+    );
     await run_client(
-        node_redis_client,
-        "node_redis",
+        babushka_client2,
+        "AsyncClientReceiveString",
+        total_commands,
+        num_of_concurrent_tasks,
+        data_size,
+        data
+    );
+
+    const babushka_client3 = await AsyncClientReturnString.CreateConnection(
+        ADDRESS
+    );
+    await run_client(
+        babushka_client3,
+        "AsyncClientReturnString",
+        total_commands,
+        num_of_concurrent_tasks,
+        data_size,
+        data
+    );
+
+    const babushka_client4 = await AsyncClient0String.CreateConnection(ADDRESS);
+    await run_client(
+        babushka_client4,
+        "AsyncClient0String",
         total_commands,
         num_of_concurrent_tasks,
         data_size,
@@ -183,13 +199,6 @@ const receivedOptions = commandLineArgs(optionDefinitions);
 
 Promise.resolve() // just added to clean the indentation of the rest of the calls
     .then(() => main(100000, 1, 100))
-    .then(() => main(100000, 1, 4000))
-    .then(() => main(100000, 10, 100))
-    .then(() => main(1000000, 100, 100))
-    .then(() => main(100000, 10, 4000))
-    .then(() => main(1000000, 100, 4000))
-    .then(() => main(5000000, 1000, 100))
-    .then(() => main(5000000, 1000, 4000))
     .then(() => print_results(receivedOptions.resultsFile))
     .then(() => {
         process.exit(0);
