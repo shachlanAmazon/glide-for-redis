@@ -10,16 +10,21 @@ export class AsyncClient2Strings {
 }
 export class AsyncClientReceiveString {
   static CreateConnection(connectionAddress: string): Promise<AsyncClientReceiveString>
-  get(key: string): Promise<string | null>
+  get(connectionAddress: string): Promise<undefined | null>
   set(key: string, value: string): Promise<void>
 }
 export class AsyncClientReturnString {
-  static CreateConnection(connectionAddress: string): Promise<AsyncClientReturnString>
-  get(key: string): Promise<string | null>
-  set(key: string, value: string): Promise<void>
+  static CreateConnection(str: string): Promise<AsyncClientReturnString>
+  get(): Promise<string | null>
+  set(): Promise<void>
 }
 export class AsyncClient0String {
   static CreateConnection(connectionAddress: string): Promise<AsyncClient0String>
-  get(key: string): Promise<string | null>
-  set(key: string, value: string): Promise<void>
+  get(): Promise<string | null>
+  set(): Promise<void>
+}
+export class AsyncClientReceiveRawPointer {
+  static CreateConnection(connectionAddress: string): Promise<AsyncClientReceiveRawPointer>
+  get(pointer: RawSendPointer): Promise<undefined | null>
+  set(key: RawSendPointer, val: RawSendPointer): Promise<void>
 }

@@ -3,4 +3,5 @@ export {
     AsyncClientReceiveString,
     AsyncClientReturnString,
     AsyncClient0String,
+    AsyncClientReceiveRawPointer,
 } from "babushka-rs-internal";

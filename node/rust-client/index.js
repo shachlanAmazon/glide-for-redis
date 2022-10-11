@@ -218,9 +218,16 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { AsyncClient2Strings, AsyncClientReceiveString, AsyncClientReturnString, AsyncClient0String } = nativeBinding
+const {
+  AsyncClient2Strings,
+  AsyncClientReceiveString,
+  AsyncClientReturnString,
+  AsyncClient0String,
+  AsyncClientReceiveRawPointer,
+} = nativeBinding
 
 module.exports.AsyncClient2Strings = AsyncClient2Strings
 module.exports.AsyncClientReceiveString = AsyncClientReceiveString
 module.exports.AsyncClientReturnString = AsyncClientReturnString
 module.exports.AsyncClient0String = AsyncClient0String
+module.exports.AsyncClientReceiveRawPointer = AsyncClientReceiveRawPointer

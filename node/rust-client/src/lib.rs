@@ -42,10 +42,15 @@ struct AsyncClient2Strings {}
 struct AsyncClientReceiveString {}
 
 #[napi]
-struct AsyncClientReturnString {}
+struct AsyncClientReturnString {
+    str: String,
+}
 
 #[napi]
 struct AsyncClient0String {}
+
+#[napi]
+struct AsyncClientReceiveRawPointer {}
 
 #[napi]
 impl AsyncClient2Strings {
@@ -80,14 +85,39 @@ impl AsyncClientReceiveString {
 
     #[napi]
     #[allow(dead_code)]
-    pub async fn get(&self) -> Result<Option<String>> {
+    pub async fn get(&self, connection_address: String) -> Result<Option<()>> {
         task::yield_now().await;
         Ok(None)
     }
 
     #[napi]
     #[allow(dead_code)]
-    pub async fn set(&self) -> Result<()> {
+    pub async fn set(&self, key: String, value: String) -> Result<()> {
+        task::yield_now().await;
+        Ok(())
+    }
+}
+
+#[napi]
+impl AsyncClientReceiveRawPointer {
+    #[napi(js_name = "CreateConnection")]
+    #[allow(dead_code)]
+    pub async fn create_connection(
+        connection_address: String,
+    ) -> Result<AsyncClientReceiveRawPointer> {
+        Ok(Self {})
+    }
+
+    #[napi]
+    #[allow(dead_code)]
+    pub async fn get(&self, pointer: RawSendPointer) -> Result<Option<()>> {
+        task::yield_now().await;
+        Ok(None)
+    }
+
+    #[napi]
+    #[allow(dead_code)]
+    pub async fn set(&self, key: RawSendPointer, val: RawSendPointer) -> Result<()> {
         task::yield_now().await;
         Ok(())
     }
@@ -97,15 +127,15 @@ impl AsyncClientReceiveString {
 impl AsyncClientReturnString {
     #[napi(js_name = "CreateConnection")]
     #[allow(dead_code)]
-    pub async fn create_connection(connection_address: String) -> Result<AsyncClientReturnString> {
-        Ok(Self {})
+    pub async fn create_connection(str: String) -> Result<AsyncClientReturnString> {
+        Ok(Self { str })
     }
 
     #[napi]
     #[allow(dead_code)]
     pub async fn get(&self) -> Result<Option<String>> {
         task::yield_now().await;
-        Ok(Some("YOLLO".to_owned()))
+        Ok(Some(self.str.clone()))
     }
 
     #[napi]

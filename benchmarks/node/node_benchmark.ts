@@ -5,6 +5,7 @@ import {
     AsyncClientReceiveString,
     AsyncClientReturnString,
     AsyncClient0String,
+    AsyncClientReceiveRawPointer,
 } from "babushka-rs";
 import commandLineArgs from "command-line-args";
 import { writeFileSync } from "fs";
@@ -24,8 +25,11 @@ const get_latency: Record<string, number[]> = {};
 const set_latency: Record<string, number[]> = {};
 
 interface IAsyncClient {
-    set: (key: string, value: string) => Promise<any>;
-    get: (key: string) => Promise<string | null>;
+    set: (
+        key: string | Uint8Array,
+        value: string | Uint8Array
+    ) => Promise<void>;
+    get: (key: string | Uint8Array) => Promise<string | Uint8Array | null>;
 }
 
 function generate_value(size: number): string {
@@ -63,15 +67,20 @@ async function redis_benchmark(
     client: IAsyncClient,
     client_name: string,
     total_commands: number,
-    data: string
+    data: string | Uint8Array
 ) {
     while (counter < total_commands) {
         let use_get = should_get();
         let tic = process.hrtime();
         if (use_get) {
-            await client.get(generate_key_get());
+            await client.get(
+                data instanceof String ? generate_key_get() : data
+            );
         } else {
-            await client.set(generate_key_set(), data);
+            await client.set(
+                data instanceof String ? generate_key_set() : data,
+                data
+            );
         }
         let toc = process.hrtime(tic);
         const latency_list = (use_get ? get_latency : set_latency)[client_name];
@@ -85,7 +94,7 @@ async function create_bench_tasks(
     client_name: string,
     total_commands: number,
     num_of_concurrent_tasks: number,
-    data: string
+    data: string | Uint8Array
 ) {
     counter = 0;
     get_latency[client_name] = [];
@@ -107,8 +116,9 @@ async function run_client(
     total_commands: number,
     num_of_concurrent_tasks: number,
     data_size: number,
-    data: string
+    data: string | Uint8Array
 ) {
+    console.log("running " + client_name);
     const time = await create_bench_tasks(
         client,
         client_name,
@@ -147,9 +157,7 @@ async function main(
     data_size: number
 ) {
     const data = generate_value(data_size);
-    const babushka_client1 = await AsyncClient2Strings.CreateConnection(
-        ADDRESS
-    );
+    const babushka_client1 = await AsyncClient2Strings.CreateConnection(data);
     await run_client(
         babushka_client1,
         "AsyncClient2Strings",
@@ -160,7 +168,7 @@ async function main(
     );
 
     const babushka_client2 = await AsyncClientReceiveString.CreateConnection(
-        ADDRESS
+        data
     );
     await run_client(
         babushka_client2,
@@ -172,7 +180,7 @@ async function main(
     );
 
     const babushka_client3 = await AsyncClientReturnString.CreateConnection(
-        ADDRESS
+        data
     );
     await run_client(
         babushka_client3,
@@ -183,7 +191,7 @@ async function main(
         data
     );
 
-    const babushka_client4 = await AsyncClient0String.CreateConnection(ADDRESS);
+    const babushka_client4 = await AsyncClient0String.CreateConnection(data);
     await run_client(
         babushka_client4,
         "AsyncClient0String",
@@ -192,6 +200,20 @@ async function main(
         data_size,
         data
     );
+
+    var enc = new TextEncoder();
+    const dataBuffer = enc.encode(data);
+    const dataArray = new Uint8Array(dataBuffer);
+    const babushka_client5 =
+        await AsyncClientReceiveRawPointer.CreateConnection(data);
+    await run_client(
+        babushka_client5,
+        "AsyncClientReceiveRawPointer",
+        total_commands,
+        num_of_concurrent_tasks,
+        data_size,
+        dataArray
+    );
 }
 
 const optionDefinitions = [{ name: "resultsFile", type: String }];
@@ -199,7 +221,9 @@ const receivedOptions = commandLineArgs(optionDefinitions);
 
 Promise.resolve() // just added to clean the indentation of the rest of the calls
     .then(() => main(100000, 1, 100))
+    .then(() => main(100000, 1, 2000))
     .then(() => main(100000, 1, 40000))
+    .then(() => main(100000, 1, 800000))
     .then(() => print_results(receivedOptions.resultsFile))
     .then(() => {
         process.exit(0);
