@@ -133,8 +133,6 @@ enum CloseReason {
 #[no_mangle]
 pub extern "C" fn start_socket_listener_wrapper(
     address: *const c_char,
-    read_socket_name: *const c_char,
-    write_socket_name: *const c_char,
     start_callback: unsafe extern "C" fn() -> (),
     close_callback: unsafe extern "C" fn(usize) -> (),
 ) {
@@ -158,27 +156,11 @@ pub extern "C" fn start_socket_listener_wrapper(
             return;
         }
     };
-    let read_socket_name = match c_string_to_string(read_socket_name) {
-        Some(str) => str,
-        None => {
-            println!("Cannot parse read_socket_name");
-            unsafe { close_callback(CloseReason::FailedParsingInputs.to_usize().unwrap()) };
-            return;
-        }
-    };
-    let write_socket_name = match c_string_to_string(write_socket_name) {
-        Some(str) => str,
-        None => {
-            println!("Cannot parse write_socket_name");
-            unsafe { close_callback(CloseReason::FailedParsingInputs.to_usize().unwrap()) };
-            return;
-        }
-    };
+
     start_socket_listener(
         client,
-        read_socket_name,
-        write_socket_name,
-        move || unsafe {
+        move |result| unsafe {
+            match result {}
             start_callback();
         },
         move |closing_reason| unsafe {
