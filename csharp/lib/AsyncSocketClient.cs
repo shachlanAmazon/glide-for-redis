@@ -44,10 +44,12 @@ namespace babushka
         // TODO - this repetition will become unmaintainable. We need to do this in macros.
         private enum RequestType
         {
+            /// Type of a set server address request. This request should happen once, when the socket connection is initialized.
+            SetServerAddress = 1,
             /// Type of a get string request.
-            GetString = 1,
+            GetString = 2,
             /// Type of a set string request.
-            SetString = 2,
+            SetString = 3,
         }
 
         // TODO - this repetition will become unmaintainable. We need to do this in macros.
@@ -68,18 +70,10 @@ namespace babushka
 
         private AsyncSocketClient(string address, string readSocketName, string writeSocketName)
         {
-            readServer = CreateServer(readSocketName);
-            writeServer = CreateServer(writeSocketName);
-            startCallbackDelegate = StartCallbackImpl;
-            closeCallbackDelegate = CloseCallbackImpl;
-            StartSocketListener(address,
-                writeSocketName,
-                readSocketName,
-                Marshal.GetFunctionPointerForDelegate(startCallbackDelegate),
-                Marshal.GetFunctionPointerForDelegate(closeCallbackDelegate));
-            readSocket = AcceptSocket(readServer);
-            writeSocket = AcceptSocket(writeServer);
-            StartListeningOnReadSocket(readSocket, messageContainer);
+            initCallbackDelegate = StartCallbackImpl;
+            StartSocketListener(Marshal.GetFunctionPointerForDelegate(initCallbackDelegate));
+            socket = AcceptSocket(readServer);
+            StartListeningOnReadSocket(socket, messageContainer);
         }
 
         ~AsyncSocketClient()
@@ -89,10 +83,7 @@ namespace babushka
 
         private void CloseConnections()
         {
-            this.readServer.Dispose();
-            this.writeServer.Dispose();
-            this.readSocket.Dispose();
-            this.writeSocket.Dispose();
+            this.socket.Dispose();
         }
 
         private struct Header
@@ -197,12 +188,6 @@ namespace babushka
             this.completionSource.SetResult(this);
         }
 
-        private void CloseCallbackImpl(ulong code)
-        {
-            CloseConnections();
-            this.completionSource.TrySetException(new Exception("Client failed starting"));
-        }
-
         private Socket CreateServer(string path)
         {
             var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.IP);
@@ -212,7 +197,7 @@ namespace babushka
             return socket;
         }
 
-        private Socket AcceptSocket(Socket server)
+        private Socket AcceptSocket(string socketAddress)
         {
             var socket = server.Accept();
             // TODO - make this configurable?
@@ -247,7 +232,7 @@ namespace babushka
             }
 
             await toLock.WaitAsync();
-            var sentBytes = await this.writeSocket.SendAsync(new ArraySegment<byte>(buffer, 0, (int)length), SocketFlags.None);
+            var sentBytes = await this.socket.SendAsync(new ArraySegment<byte>(buffer, 0, (int)length), SocketFlags.None);
             toLock.Release();
             if (sentBytes != length)
             {
@@ -260,13 +245,10 @@ namespace babushka
 
         #region private fields
 
-        private readonly Socket readServer;
-        private readonly Socket writeServer;
-        private Socket readSocket;
-        private Socket writeSocket;
+        private Socket socket;
 
         // The callback is being held by the client, in order to ensure that it isn't garbage collected.
-        private readonly StartCallback startCallbackDelegate;
+        private readonly StartCallback initCallbackDelegate;
         // The callback is being held by the client, in order to ensure that it isn't garbage collected.
         private readonly CloseCallback closeCallbackDelegate;
         private readonly TaskCompletionSource<AsyncSocketClient> completionSource = new();
@@ -279,7 +261,7 @@ namespace babushka
         private delegate void StartCallback();
         private delegate void CloseCallback(ulong returnCode);
         [DllImport("libbabushka_csharp", CallingConvention = CallingConvention.Cdecl, EntryPoint = "start_socket_listener_wrapper")]
-        private static extern void StartSocketListener(string address, string readSocketName, string writeSocketName, IntPtr startCallback, IntPtr closeCallback);
+        private static extern void StartSocketListener(IntPtr initCallback);
 
         #endregion
     }
