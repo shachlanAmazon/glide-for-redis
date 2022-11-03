@@ -163,6 +163,8 @@ namespace babushka
                 {
                     return new ArraySegment<byte>(buffer, counter, messageLength - counter);
                 }
+
+                Console.WriteLine($"Received response for {header.callbackIndex} {DateTime.Now.Second}");
                 var message = messageContainer.GetMessage((int)header.callbackIndex);
 
                 switch (header.responseType)
@@ -248,8 +250,10 @@ namespace babushka
                 WriteUint32ToBuffer((UInt32)firstStringLength, buffer, HEADER_LENGTH_IN_BYTES);
             }
 
+            Console.WriteLine($"Begin send for {callbackIndex} {DateTime.Now.Second}");
             this.socket.BeginSend(buffer, 0, length, SocketFlags.None, (_) =>
             {
+                Console.WriteLine($"Done send for {callbackIndex} {DateTime.Now.Second}");
                 ArrayPool<byte>.Shared.Return(buffer);
 
             }, null);

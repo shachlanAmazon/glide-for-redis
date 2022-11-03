@@ -208,6 +208,7 @@ async fn send_get_request(
             if offset != 0 {
                 output_buffer.resize(length + 4 - offset, 0);
             }
+            println!("RUST done get {callback_index}");
             write_to_output(&output_buffer, &write_socket, &write_lock).await;
         }
         None => {
@@ -226,6 +227,7 @@ fn handle_request(
     pool: Rc<Pool<Vec<u8>>>,
     write_lock: Rc<Mutex<()>>,
 ) {
+    println!("RUST Handling request {0}", request.callback_index);
     task::spawn_local(async move {
         let result = match request.request_type {
             RequestRanges::Get { key: key_range } => {
@@ -439,7 +441,7 @@ async fn listen_on_client_stream(
             return; // TODO: implement error protocol, handle closing reasons different from ReadSocketClosed
         }
         Err(BabushkaError::BaseError(err)) => {
-            println!("Recieved error: {:?}", err); // TODO: implement error protocol
+            println!("RUST Recieved error: {:?}", err); // TODO: implement error protocol
             return;
         }
     };
