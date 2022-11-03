@@ -192,7 +192,7 @@ flushDB
 if [ $writeResultsCSV == 1 ]; 
 then
     cd ${BENCH_FOLDER}
-    finalCSV=results/final-$identifier.csv
+    finalCSV=results/with-split-final-$identifier.csv
     $pythonCommand $utilitiesDir/csv_exporter.py $resultFiles$finalCSV
     echo results are in $finalCSV
 fi
