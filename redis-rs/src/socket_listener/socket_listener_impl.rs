@@ -72,7 +72,8 @@ impl SocketListener {
                 Ok(0) => {
                     return ReadSocketClosed.into();
                 }
-                Ok(_) => {
+                Ok(size) => {
+                    println!("RUST Read {size} bytes");
                     return match self.rotating_buffer.get_requests() {
                         Ok(requests) => ReceivedValues(requests),
                         Err(err) => UnhandledError(err.into()).into(),
