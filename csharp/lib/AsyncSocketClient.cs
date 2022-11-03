@@ -10,28 +10,53 @@ namespace babushka
     {
         #region public methods
 
-        public static Task<AsyncSocketClient> CreateSocketClient(string address)
+        public static async Task<AsyncSocketClient> CreateSocketClient(string address)
         {
-            string tempDirectory = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-            Directory.CreateDirectory(tempDirectory);
-            var readSocketName = Path.Combine(tempDirectory, "read");
-            var writeSocketName = Path.Combine(tempDirectory, "write");
+            var completionSource = new TaskCompletionSource<string>();
+            InitCallback initCallback = (IntPtr successPointer, IntPtr errorPointer) =>
+            {
+                if (successPointer != IntPtr.Zero)
+                {
+                    var address = Marshal.PtrToStringAnsi(successPointer);
+                    if (address is not null)
+                    {
+                        completionSource.SetResult(address);
+                    }
+                    else
+                    {
+                        completionSource.SetException(new Exception("Received address that couldn't be converted to string"));
+                    }
+                }
+                else if (errorPointer != IntPtr.Zero)
+                {
+                    var errorMessage = Marshal.PtrToStringAnsi(errorPointer);
+                    completionSource.SetException(new Exception(errorMessage));
+                }
+                else
+                {
+                    completionSource.SetException(new Exception("Did not receive results from init callback"));
+                }
+            };
+            var callbackPointer = Marshal.GetFunctionPointerForDelegate(initCallback);
+            StartSocketListener(callbackPointer);
 
-            var client = new AsyncSocketClient(address, readSocketName, writeSocketName);
+            var socketName = await completionSource.Task;
 
-            return client.completionSource.Task;
+            var client = new AsyncSocketClient(socketName);
+            await client.SetServerAddress(address);
+            return client;
         }
 
         public async Task SetAsync(string key, string value)
         {
-            var (message, task) = messageContainer.GetMessageForCall(key, value);
+            var (message, task) = messageContainer.GetMessageForCall(null, null);
             await WriteToSocket(key, value, RequestType.SetString, message.Index);
             await task;
         }
 
         public async Task<string?> GetAsync(string key)
         {
-            var (message, task) = messageContainer.GetMessageForCall(key, null);
+            var (message, task) = messageContainer.GetMessageForCall(null, null);
             await WriteToSocket(key, null, RequestType.GetString, message.Index);
             return await task;
         }
@@ -68,12 +93,17 @@ namespace babushka
 
         #region private methods
 
-        private AsyncSocketClient(string address, string readSocketName, string writeSocketName)
+        private AsyncSocketClient(string socketName)
         {
-            initCallbackDelegate = StartCallbackImpl;
-            StartSocketListener(Marshal.GetFunctionPointerForDelegate(initCallbackDelegate));
-            socket = AcceptSocket(readServer);
-            StartListeningOnReadSocket(socket, messageContainer);
+            socket = ConnectToSocket(socketName);
+            StartListeningOnSocket(socket, messageContainer);
+        }
+
+        private async Task SetServerAddress(string address)
+        {
+            var (message, task) = messageContainer.GetMessageForCall(null, null);
+            await WriteToSocket(address, null, RequestType.SetServerAddress, 0);
+            await task;
         }
 
         ~AsyncSocketClient()
@@ -163,16 +193,16 @@ namespace babushka
         }
 
         // this method is static, in order not to hold a reference to an AsyncSocketClient, so that it won't prevent GC and thus disposal.
-        private static void StartListeningOnReadSocket(Socket readSocket, MessageContainer messageContainer)
+        private static void StartListeningOnSocket(Socket socket, MessageContainer messageContainer)
         {
             Task.Run(async () =>
             {
                 var previousSegment = new ArraySegment<byte>();
-                while (readSocket.Connected)
+                while (socket.Connected)
                 {
                     var buffer = GetBuffer(previousSegment);
                     var segmentAfterPreviousData = new ArraySegment<byte>(buffer, previousSegment.Count, buffer.Length - previousSegment.Count);
-                    var receivedLength = await readSocket.ReceiveAsync(segmentAfterPreviousData, SocketFlags.None);
+                    var receivedLength = await socket.ReceiveAsync(segmentAfterPreviousData, SocketFlags.None);
                     var newBuffer = ParseReadResults(buffer, receivedLength + previousSegment.Count, messageContainer);
                     if (previousSegment.Array is not null)
                     {
@@ -183,26 +213,14 @@ namespace babushka
             });
         }
 
-        private void StartCallbackImpl()
-        {
-            this.completionSource.SetResult(this);
-        }
-
-        private Socket CreateServer(string path)
+        private Socket ConnectToSocket(string socketAddress)
         {
             var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.IP);
-            var endpoint = new UnixDomainSocketEndPoint(path);
-            socket.Bind(endpoint);
-            socket.Listen(1);
-            return socket;
-        }
-
-        private Socket AcceptSocket(string socketAddress)
-        {
-            var socket = server.Accept();
-            // TODO - make this configurable?
+            var endpoint = new UnixDomainSocketEndPoint(socketAddress);
+            socket.Blocking = false;
             socket.SendBufferSize = 2 ^ 22;
             socket.ReceiveBufferSize = 2 ^ 22;
+            socket.Connect(endpoint);
             return socket;
         }
 
@@ -247,19 +265,13 @@ namespace babushka
 
         private Socket socket;
 
-        // The callback is being held by the client, in order to ensure that it isn't garbage collected.
-        private readonly StartCallback initCallbackDelegate;
-        // The callback is being held by the client, in order to ensure that it isn't garbage collected.
-        private readonly CloseCallback closeCallbackDelegate;
-        private readonly TaskCompletionSource<AsyncSocketClient> completionSource = new();
         private readonly MessageContainer messageContainer = new();
 
         #endregion private types
 
         #region rust bindings
 
-        private delegate void StartCallback();
-        private delegate void CloseCallback(ulong returnCode);
+        private delegate void InitCallback(IntPtr addressPointer, IntPtr errorPointer);
         [DllImport("libbabushka_csharp", CallingConvention = CallingConvention.Cdecl, EntryPoint = "start_socket_listener_wrapper")]
         private static extern void StartSocketListener(IntPtr initCallback);
 
