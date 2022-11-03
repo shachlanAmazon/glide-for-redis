@@ -50,14 +50,14 @@ namespace babushka
         public async Task SetAsync(string key, string value)
         {
             var (message, task) = messageContainer.GetMessageForCall(null, null);
-            await WriteToSocket(key, value, RequestType.SetString, message.Index);
+            WriteToSocket(key, value, RequestType.SetString, message.Index);
             await task;
         }
 
         public async Task<string?> GetAsync(string key)
         {
             var (message, task) = messageContainer.GetMessageForCall(null, null);
-            await WriteToSocket(key, null, RequestType.GetString, message.Index);
+            WriteToSocket(key, null, RequestType.GetString, message.Index);
             return await task;
         }
 
@@ -102,7 +102,7 @@ namespace babushka
         private async Task SetServerAddress(string address)
         {
             var (message, task) = messageContainer.GetMessageForCall(null, null);
-            await WriteToSocket(address, null, RequestType.SetServerAddress, 0);
+            WriteToSocket(address, null, RequestType.SetServerAddress, message.Index);
             await task;
         }
 
@@ -230,8 +230,7 @@ namespace babushka
             Buffer.BlockCopy(encodedVal, 0, target, offset, encodedVal.Length);
         }
 
-        private readonly SemaphoreSlim toLock = new(1, 1);
-        private async Task WriteToSocket(string key, string? value, RequestType requestType, int callbackIndex)
+        private void WriteToSocket(string key, string? value, RequestType requestType, int callbackIndex)
         {
             var encoding = Encoding.UTF8;
             var headerLength = HEADER_LENGTH_IN_BYTES + ((value == null) ? 0 : 4);
@@ -249,14 +248,11 @@ namespace babushka
                 WriteUint32ToBuffer((UInt32)firstStringLength, buffer, HEADER_LENGTH_IN_BYTES);
             }
 
-            await toLock.WaitAsync();
-            var sentBytes = await this.socket.SendAsync(new ArraySegment<byte>(buffer, 0, (int)length), SocketFlags.None);
-            toLock.Release();
-            if (sentBytes != length)
+            this.socket.BeginSend(buffer, 0, length, SocketFlags.None, (_) =>
             {
-                throw new Exception($"Wanted to write {length} bytes, actually wrote {sentBytes}");
-            }
-            ArrayPool<byte>.Shared.Return(buffer);
+                ArrayPool<byte>.Shared.Return(buffer);
+
+            }, null);
         }
 
         #endregion private methods
