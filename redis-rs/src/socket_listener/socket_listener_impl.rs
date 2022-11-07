@@ -73,7 +73,7 @@ impl SocketListener {
                     return ReadSocketClosed.into();
                 }
                 Ok(size) => {
-                    println!("RUST Read {size} bytes");
+                    // println!("RUST Read {size} bytes");
                     return match self.rotating_buffer.get_requests() {
                         Ok(requests) => ReceivedValues(requests),
                         Err(err) => UnhandledError(err.into()).into(),
@@ -209,7 +209,7 @@ async fn send_get_request(
             if offset != 0 {
                 output_buffer.resize(length + 4 - offset, 0);
             }
-            println!("RUST done get {callback_index}");
+            // println!("RUST done get {callback_index}");
             write_to_output(&output_buffer, &write_socket, &write_lock).await;
         }
         None => {
@@ -228,7 +228,7 @@ fn handle_request(
     pool: Rc<Pool<Vec<u8>>>,
     write_lock: Rc<Mutex<()>>,
 ) {
-    println!("RUST Handling request {0}", request.callback_index);
+    // println!("RUST Handling request {0}", request.callback_index);
     task::spawn_local(async move {
         let result = match request.request_type {
             RequestRanges::Get { key: key_range } => {
@@ -441,8 +441,8 @@ async fn listen_on_client_stream(
             update_notify_connected_clients(connected_clients, notify_close);
             return; // TODO: implement error protocol, handle closing reasons different from ReadSocketClosed
         }
-        Err(BabushkaError::BaseError(err)) => {
-            println!("RUST Recieved error: {:?}", err); // TODO: implement error protocol
+        Err(BabushkaError::BaseError(_)) => {
+            // println!("RUST Recieved error: {:?}", err); // TODO: implement error protocol
             return;
         }
     };
