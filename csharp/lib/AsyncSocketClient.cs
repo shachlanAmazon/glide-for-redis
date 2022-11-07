@@ -1,3 +1,4 @@
+using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Net.Sockets;
@@ -42,29 +43,29 @@ namespace babushka
 
             var socketName = await completionSource.Task;
 
-            var client = new AsyncSocketClient(socketName);
-            await client.SetServerAddress(address);
-            return client;
+            return new AsyncSocketClient(socketName, address);
         }
 
         public async Task SetAsync(string key, string value)
         {
-            var (message, task) = messageContainer.GetMessageForCall(null, null);
-            WriteToSocket(key, value, RequestType.SetString, message.Index);
-            await task;
+            var socket = await GetSocketAsync();
+            await WriteToSocketAsync(socket, key, value, RequestType.SetString);
+            await GetResponseAsync<object>(socket);
+            availableSockets.Enqueue(socket);
         }
 
         public async Task<string?> GetAsync(string key)
         {
-            var (message, task) = messageContainer.GetMessageForCall(null, null);
-            WriteToSocket(key, null, RequestType.GetString, message.Index);
-            return await task;
+            var socket = await GetSocketAsync();
+            await WriteToSocketAsync(socket, key, null, RequestType.GetString);
+            var result = await GetResponseAsync<string?>(socket);
+            availableSockets.Enqueue(socket);
+            return result;
         }
 
         #endregion public methods
 
         #region private types
-
 
         // TODO - this repetition will become unmaintainable. We need to do this in macros.
         private enum RequestType
@@ -93,17 +94,26 @@ namespace babushka
 
         #region private methods
 
-        private AsyncSocketClient(string socketName)
+        private async Task<Socket> GetSocketAsync()
         {
-            socket = ConnectToSocket(socketName);
-            StartListeningOnSocket(socket, messageContainer);
+            if (!availableSockets.TryDequeue(out var socket))
+            {
+                socket = CreateSocket(address);
+                await SetServerAddress(socket);
+            }
+            return socket;
         }
 
-        private async Task SetServerAddress(string address)
+        private AsyncSocketClient(string socketName, string address)
         {
-            var (message, task) = messageContainer.GetMessageForCall(null, null);
-            WriteToSocket(address, null, RequestType.SetServerAddress, message.Index);
-            await task;
+            this.socketName = socketName;
+            this.address = address;
+        }
+
+        private async Task SetServerAddress(Socket socket)
+        {
+            await WriteToSocketAsync(socket, address, null, RequestType.SetServerAddress);
+            await GetResponseAsync<object>(socket);
         }
 
         ~AsyncSocketClient()
@@ -113,7 +123,10 @@ namespace babushka
 
         private void CloseConnections()
         {
-            this.socket.Dispose();
+            foreach (var socket in this.availableSockets)
+            {
+                socket.Dispose();
+            }
         }
 
         private struct Header
@@ -149,73 +162,62 @@ namespace babushka
             return newBuffer;
         }
 
-        private static ArraySegment<byte> ParseReadResults(byte[] buffer, int messageLength, MessageContainer messageContainer)
+        // private static ArraySegment<byte> ParseReadResults(byte[] buffer, int messageLength)
+        // {
+        //     var header = GetHeader(buffer, counter);
+        //     if (header.length == 0)
+        //     {
+        //         throw new ArgumentException("length 0");
+        //     }
+        //     if (counter + header.length > messageLength)
+        //     {
+        //         return new ArraySegment<byte>(buffer, counter, messageLength - counter);
+        //     }
+
+        //     switch (header.responseType)
+        //     {
+        //         case ResponseType.Null:
+        //             message.SetResult(null);
+        //             break;
+        //         case ResponseType.String:
+        //             var valueLength = header.length - HEADER_LENGTH_IN_BYTES;
+        //             message.SetResult(Encoding.UTF8.GetString(new Span<byte>(buffer,
+        //                 (int)(counter + HEADER_LENGTH_IN_BYTES),
+        //                 (int)valueLength
+        //             )));
+        //             break;
+        //     }
+
+
+        //     counter += (int)header.length;
+        //     var offset = counter % 4;
+        //     if (offset != 0)
+        //     {
+        //         // align counter to 4.
+        //         counter += 4 - offset;
+        //     }
+        // }
+
+        //     return new ArraySegment<byte>(buffer, counter, messageLength - counter);
+        // }
+
+        private static async Task<string?> GetResponseAsync(Socket socket)
         {
-            var counter = 0;
-            while (counter + HEADER_LENGTH_IN_BYTES <= messageLength)
+            var headerBuffer = new byte[HEADER_LENGTH_IN_BYTES];
+            var previousSegment = new ArraySegment<byte>(headerBuffer);
+            var receivedLength = await socket.ReceiveAsync(segmentAfterPreviousData, SocketFlags.None);
+            var buffer = GetBuffer(previousSegment);
+            var segmentAfterPreviousData = new ArraySegment<byte>(buffer, previousSegment.Count, buffer.Length - previousSegment.Count);
+            var receivedLength = await socket.ReceiveAsync(segmentAfterPreviousData, SocketFlags.None);
+            var newBuffer = ParseReadResults(buffer, receivedLength + previousSegment.Count);
+            if (previousSegment.Array is not null)
             {
-                var header = GetHeader(buffer, counter);
-                if (header.length == 0)
-                {
-                    throw new ArgumentException("length 0");
-                }
-                if (counter + header.length > messageLength)
-                {
-                    return new ArraySegment<byte>(buffer, counter, messageLength - counter);
-                }
-
-                Console.WriteLine($"Received response for {header.callbackIndex} {DateTime.Now.Second}");
-                var message = messageContainer.GetMessage((int)header.callbackIndex);
-
-                switch (header.responseType)
-                {
-                    case ResponseType.Null:
-                        message.SetResult(null);
-                        break;
-                    case ResponseType.String:
-                        var valueLength = header.length - HEADER_LENGTH_IN_BYTES;
-                        message.SetResult(Encoding.UTF8.GetString(new Span<byte>(buffer,
-                            (int)(counter + HEADER_LENGTH_IN_BYTES),
-                            (int)valueLength
-                        )));
-                        break;
-                }
-
-
-                counter += (int)header.length;
-                var offset = counter % 4;
-                if (offset != 0)
-                {
-                    // align counter to 4.
-                    counter += 4 - offset;
-                }
+                ArrayPool<byte>.Shared.Return(previousSegment.Array);
             }
-
-            return new ArraySegment<byte>(buffer, counter, messageLength - counter);
+            previousSegment = newBuffer;
         }
 
-        // this method is static, in order not to hold a reference to an AsyncSocketClient, so that it won't prevent GC and thus disposal.
-        private static void StartListeningOnSocket(Socket socket, MessageContainer messageContainer)
-        {
-            Task.Run(async () =>
-            {
-                var previousSegment = new ArraySegment<byte>();
-                while (socket.Connected)
-                {
-                    var buffer = GetBuffer(previousSegment);
-                    var segmentAfterPreviousData = new ArraySegment<byte>(buffer, previousSegment.Count, buffer.Length - previousSegment.Count);
-                    var receivedLength = await socket.ReceiveAsync(segmentAfterPreviousData, SocketFlags.None);
-                    var newBuffer = ParseReadResults(buffer, receivedLength + previousSegment.Count, messageContainer);
-                    if (previousSegment.Array is not null)
-                    {
-                        ArrayPool<byte>.Shared.Return(previousSegment.Array);
-                    }
-                    previousSegment = newBuffer;
-                }
-            });
-        }
-
-        private Socket ConnectToSocket(string socketAddress)
+        private static Socket CreateSocket(string socketAddress)
         {
             var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.IP);
             var endpoint = new UnixDomainSocketEndPoint(socketAddress);
@@ -232,7 +234,7 @@ namespace babushka
             Buffer.BlockCopy(encodedVal, 0, target, offset, encodedVal.Length);
         }
 
-        private void WriteToSocket(string key, string? value, RequestType requestType, int callbackIndex)
+        private async Task WriteToSocketAsync(Socket socket, string key, string? value, RequestType requestType)
         {
             var encoding = Encoding.UTF8;
             var headerLength = HEADER_LENGTH_IN_BYTES + ((value == null) ? 0 : 4);
@@ -243,29 +245,22 @@ namespace babushka
                 encoding.GetBytes(value, 0, value.Length, buffer, (int)headerLength + firstStringLength);
             var length = headerLength + firstStringLength + secondStringLength;
             WriteUint32ToBuffer((UInt32)length, buffer, 0);
-            WriteUint32ToBuffer((UInt32)callbackIndex, buffer, 4);
+            WriteUint32ToBuffer((UInt32)0, buffer, 4);
             WriteUint32ToBuffer((UInt32)requestType, buffer, 8);
             if (value != null)
             {
                 WriteUint32ToBuffer((UInt32)firstStringLength, buffer, HEADER_LENGTH_IN_BYTES);
             }
 
-            Console.WriteLine($"Begin send for {callbackIndex} {DateTime.Now.Second}");
-            this.socket.BeginSend(buffer, 0, length, SocketFlags.None, (_) =>
-            {
-                Console.WriteLine($"Done send for {callbackIndex} {DateTime.Now.Second}");
-                ArrayPool<byte>.Shared.Return(buffer);
-
-            }, null);
+            await socket.SendAsync(new ReadOnlyMemory<byte>(buffer, 0, length), SocketFlags.None);
+            ArrayPool<byte>.Shared.Return(buffer);
         }
 
         #endregion private methods
 
         #region private fields
 
-        private Socket socket;
-
-        private readonly MessageContainer messageContainer = new();
+        private readonly ConcurrentQueue<Socket> availableSockets = new();
 
         #endregion private types
 
@@ -274,6 +269,8 @@ namespace babushka
         private delegate void InitCallback(IntPtr addressPointer, IntPtr errorPointer);
         [DllImport("libbabushka_csharp", CallingConvention = CallingConvention.Cdecl, EntryPoint = "start_socket_listener_wrapper")]
         private static extern void StartSocketListener(IntPtr initCallback);
+        private readonly string socketName;
+        private readonly string address;
 
         #endregion
     }
