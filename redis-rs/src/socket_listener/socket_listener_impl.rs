@@ -320,6 +320,7 @@ async fn handle_requests(
 }
 
 fn close_socket() {
+    println!("Erasing file");
     std::fs::remove_file(get_socket_path()).expect("Failed to delete socket file");
 }
 
@@ -501,6 +502,7 @@ where
         loop {
             tokio::select! {
                 listen_v = listener.accept() => {
+                    println!("XXXXXX");
                     if let Ok((stream, _addr)) = listen_v {
                         // New client
                         let cloned_close_notifier = notify_close.clone();

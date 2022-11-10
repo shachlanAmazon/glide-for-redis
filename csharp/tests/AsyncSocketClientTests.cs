@@ -75,34 +75,34 @@ public class AsyncSocketClientTests
 
     // This test is slow and hardly a unit test, but it caught timing and releasing issues in the past,
     // so it's being kept.
-    // [Test, Timeout(10000)]
-    // public async Task ConcurrentOperationsWork()
-    // {
-    //     var client = await AsyncSocketClient.CreateSocketClient("redis://localhost:6379");
-    //     var operations = new List<Task>();
+    [Test, Timeout(10000)]
+    public async Task ConcurrentOperationsWork()
+    {
+        var client = await AsyncSocketClient.CreateSocketClient("redis://localhost:6379");
+        var operations = new List<Task>();
 
-    //     for (int i = 0; i < 2; ++i)
-    //     {
-    //         var index = i;
-    //         operations.Add(Task.Run(async () =>
-    //         {
-    //             for (int i = 0; i < 10; ++i)
-    //             {
-    //                 Console.WriteLine($"Test send for {i} {index}");
-    //                 if ((i + index) % 5 == 0)
-    //                 {
-    //                     var result = await client.GetAsync(Guid.NewGuid().ToString());
-    //                     Assert.That(result, Is.EqualTo(null));
-    //                 }
-    //                 else
-    //                 {
-    //                     await GetAndSetRandomValues(client);
-    //                 }
-    //                 Console.WriteLine($"Test received for {i} {index}");
-    //             }
-    //         }));
-    //     }
+        for (int i = 0; i < 2; ++i)
+        {
+            var index = i;
+            operations.Add(Task.Run(async () =>
+            {
+                for (int i = 0; i < 10; ++i)
+                {
+                    Console.WriteLine($"Test send for {i} {index}");
+                    if ((i + index) % 5 == 0)
+                    {
+                        var result = await client.GetAsync(Guid.NewGuid().ToString());
+                        Assert.That(result, Is.EqualTo(null));
+                    }
+                    else
+                    {
+                        await GetAndSetRandomValues(client);
+                    }
+                    Console.WriteLine($"Test received for {i} {index}");
+                }
+            }));
+        }
 
-    //     Task.WaitAll(operations.ToArray());
-    // }
+        Task.WaitAll(operations.ToArray());
+    }
 }
