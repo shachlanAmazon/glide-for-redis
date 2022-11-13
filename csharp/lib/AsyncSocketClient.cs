@@ -13,7 +13,7 @@ namespace babushka
 
         public static async Task<AsyncSocketClient> CreateSocketClient(string address)
         {
-            Console.WriteLine("start create client");
+            // Console.WriteLine("start create client");
             var completionSource = new TaskCompletionSource<string>();
             InitCallback initCallback = (IntPtr successPointer, IntPtr errorPointer) =>
             {
@@ -43,32 +43,32 @@ namespace babushka
             StartSocketListener(callbackPointer);
 
             var socketName = await completionSource.Task;
-            Console.WriteLine("got socket name");
+            // Console.WriteLine("got socket name");
 
             return new AsyncSocketClient(socketName, address);
         }
 
         public async Task SetAsync(string key, string value)
         {
-            Console.WriteLine("set start");
+            // Console.WriteLine("set start");
             var socket = await GetSocketAsync();
-            Console.WriteLine("set get socket");
+            // Console.WriteLine("set get socket");
             await WriteToSocketAsync(socket, key, value, RequestType.SetString);
-            Console.WriteLine("set send message");
+            // Console.WriteLine("set send message");
             await GetResponseAsync(socket);
-            Console.WriteLine("set receive message");
+            // Console.WriteLine("set receive message");
             availableSockets.Enqueue(socket);
         }
 
         public async Task<string?> GetAsync(string key)
         {
-            Console.WriteLine("get start");
+            // Console.WriteLine("get start");
             var socket = await GetSocketAsync();
-            Console.WriteLine("get get socket");
+            // Console.WriteLine("get get socket");
             await WriteToSocketAsync(socket, key, null, RequestType.GetString);
-            Console.WriteLine("get send message");
+            // Console.WriteLine("get send message");
             var result = await GetResponseAsync(socket);
-            Console.WriteLine("get receive message");
+            // Console.WriteLine("get receive message");
             availableSockets.Enqueue(socket);
             return result;
         }
@@ -95,6 +95,8 @@ namespace babushka
             Null = 0,
             /// Type of a response that returns a string.
             String = 1,
+            RequestError = 2,
+            ClosingError = 3,
         }
 
         // TODO - this repetition will become unmaintainable. We need to do this in macros.
@@ -162,7 +164,7 @@ namespace babushka
             var headerBuffer = new byte[HEADER_LENGTH_IN_BYTES];
             await socket.ReceiveAsync(new ArraySegment<byte>(headerBuffer), SocketFlags.None);
             var header = GetHeader(headerBuffer, 0);
-            Console.WriteLine("Length: " + header.length);
+            // Console.WriteLine("Length: " + header.length);
             if (header.responseType == ResponseType.Null)
             {
                 return null;
@@ -173,17 +175,30 @@ namespace babushka
             }
             var stringLength = (int)header.length - HEADER_LENGTH_IN_BYTES;
             var buffer = ArrayPool<byte>.Shared.Rent(stringLength);
-            Console.WriteLine("Read buffer length " + buffer.Length);
+            // Console.WriteLine("Read buffer length " + buffer.Length);
             var bytesRead = 0;
             while (bytesRead < stringLength)
             {
                 bytesRead += await socket.ReceiveAsync(new ArraySegment<byte>(buffer, bytesRead, buffer.Length - bytesRead), SocketFlags.None);
             }
-            Console.WriteLine("Bytes read " + bytesRead);
+            // Console.WriteLine("Bytes read " + bytesRead);
             var result = Encoding.UTF8.GetString(new Span<byte>(buffer, 0, stringLength));
             ArrayPool<byte>.Shared.Return(buffer);
-
-            return result;
+            if (header.responseType == ResponseType.String)
+            {
+                return result;
+            }
+            if (header.responseType == ResponseType.RequestError)
+            {
+                Console.WriteLine("request failure " + result);
+                throw new Exception(result);
+            }
+            if (header.responseType == ResponseType.ClosingError)
+            {
+                Console.WriteLine("clsoing failure " + result);
+                throw new Exception(result);
+            }
+            throw new Exception("Unknown response type: " + header.responseType);
         }
 
         private static Socket CreateSocket(string socketAddress)
@@ -209,12 +224,12 @@ namespace babushka
             var headerLength = HEADER_LENGTH_IN_BYTES + ((value == null) ? 0 : 4);
             var maxLength = headerLength + key.Length * 3 + ((value == null) ? 0 : value.Length * 3);
             var buffer = ArrayPool<byte>.Shared.Rent(maxLength);
-            Console.WriteLine("write buffer length " + buffer.Length);
+            // Console.WriteLine("write buffer length " + buffer.Length);
             var firstStringLength = encoding.GetBytes(key, 0, key.Length, buffer, (int)headerLength);
             var secondStringLength = (value == null) ? 0 :
                 encoding.GetBytes(value, 0, value.Length, buffer, (int)headerLength + firstStringLength);
             var length = headerLength + firstStringLength + secondStringLength;
-            Console.WriteLine("write length " + length);
+            // Console.WriteLine("write length " + length);
             WriteUint32ToBuffer((UInt32)length, buffer, 0);
             WriteUint32ToBuffer((UInt32)0, buffer, 4);
             WriteUint32ToBuffer((UInt32)requestType, buffer, 8);

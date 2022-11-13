@@ -16,7 +16,7 @@ public class AsyncSocketClientTests
         Assert.That(result, Is.EqualTo(value));
     }
 
-    [Test, Timeout(200)]
+    [Test, Timeout(2000)]
     public async Task GetReturnsLastSet()
     {
         var client = await AsyncSocketClient.CreateSocketClient("redis://localhost:6379");
@@ -24,7 +24,7 @@ public class AsyncSocketClientTests
         await GetAndSetRandomValues(client);
     }
 
-    [Test, Timeout(200)]
+    [Test, Timeout(2000)]
     public async Task GetAndSetCanHandleNonASCIIUnicode()
     {
         var client = await AsyncSocketClient.CreateSocketClient("redis://localhost:6379");
@@ -35,7 +35,7 @@ public class AsyncSocketClientTests
         Assert.That(result, Is.EqualTo(value));
     }
 
-    [Test, Timeout(200)]
+    [Test, Timeout(2000)]
     public async Task GetReturnsNull()
     {
         var client = await AsyncSocketClient.CreateSocketClient("redis://localhost:6379");
@@ -43,7 +43,7 @@ public class AsyncSocketClientTests
         Assert.That(result, Is.EqualTo(null));
     }
 
-    [Test, Timeout(200)]
+    [Test, Timeout(2000)]
     public async Task GetReturnsEmptyString()
     {
         var client = await AsyncSocketClient.CreateSocketClient("redis://localhost:6379");
@@ -54,7 +54,7 @@ public class AsyncSocketClientTests
         Assert.That(result, Is.EqualTo(value));
     }
 
-    [Test, Timeout(2000)]
+    [Test, Timeout(20000)]
     public async Task HandleVeryLargeInput()
     {
         var client = await AsyncSocketClient.CreateSocketClient("redis://localhost:6379");
@@ -75,7 +75,7 @@ public class AsyncSocketClientTests
 
     // This test is slow and hardly a unit test, but it caught timing and releasing issues in the past,
     // so it's being kept.
-    [Test, Timeout(10000)]
+    [Test, Timeout(100000)]
     public async Task ConcurrentOperationsWork()
     {
         var client = await AsyncSocketClient.CreateSocketClient("redis://localhost:6379");

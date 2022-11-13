@@ -72,7 +72,7 @@ impl SocketListener {
                 Ok(0) => {
                     return ReadSocketClosed.into();
                 }
-                Ok(size) => {
+                Ok(_) => {
                     // println!("RUST Read {size} bytes");
                     return match self.rotating_buffer.get_requests() {
                         Ok(requests) => ReceivedValues(requests),
@@ -416,6 +416,7 @@ fn update_notify_connected_clients(
     // Check if the entire socket listener should be closed before
     // closing the client's connection task
     if connected_clients.fetch_sub(1, Ordering::Relaxed) == 1 {
+        println!("removed socket");
         // No more clients connected, close the socket
         close_notifier.notify_one();
     }
@@ -502,7 +503,7 @@ where
         loop {
             tokio::select! {
                 listen_v = listener.accept() => {
-                    println!("XXXXXX");
+                    // println!("XXXXXX");
                     if let Ok((stream, _addr)) = listen_v {
                         // New client
                         let cloned_close_notifier = notify_close.clone();
