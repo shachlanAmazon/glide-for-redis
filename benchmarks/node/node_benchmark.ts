@@ -28,6 +28,7 @@ const bench_json_results: {}[] = [];
 interface IAsyncClient {
     set: (key: string, value: string) => Promise<any>;
     get: (key: string) => Promise<string | null>;
+    dispose?: () => void;
 }
 
 function generate_value(size: number): string {
@@ -89,10 +90,13 @@ async function redis_benchmark(
         latency_list.push(toc[0] * 1000 + toc[1] / 1000000);
         counter += 1;
     }
+    if (client.dispose) {
+        client.dispose();
+    }
 }
 
 async function create_bench_tasks(
-    client: IAsyncClient,
+    client_creation: () => Promise<IAsyncClient>,
     total_commands: number,
     num_of_concurrent_tasks: number,
     data: string,
@@ -102,7 +106,12 @@ async function create_bench_tasks(
     let tic = process.hrtime();
     for (let i = 0; i < num_of_concurrent_tasks; i++) {
         running_tasks.push(
-            redis_benchmark(client, total_commands, data, action_latencies)
+            redis_benchmark(
+                await client_creation(),
+                total_commands,
+                data,
+                action_latencies
+            )
         );
     }
     await Promise.all(running_tasks);
@@ -126,7 +135,7 @@ function latency_results(
 }
 
 async function run_client(
-    client: IAsyncClient,
+    client_creation: () => Promise<IAsyncClient>,
     client_name: string,
     total_commands: number,
     num_of_concurrent_tasks: number,
@@ -140,7 +149,7 @@ async function run_client(
     };
 
     const time = await create_bench_tasks(
-        client,
+        client_creation,
         total_commands,
         num_of_concurrent_tasks,
         data,
@@ -189,9 +198,8 @@ async function main(
         clients_to_run == "all" ||
         clients_to_run == "babushka"
     ) {
-        const babushka_client = await AsyncClient.CreateConnection(address);
         await run_client(
-            babushka_client,
+            async () => AsyncClient.CreateConnection(address),
             "babushka FFI",
             total_commands,
             num_of_concurrent_tasks,
@@ -205,26 +213,24 @@ async function main(
         clients_to_run == "all" ||
         clients_to_run == "babushka"
     ) {
-        const babushka_socket_client = await SocketConnection.CreateConnection(
-            address
-        );
         await run_client(
-            babushka_socket_client,
+            () => SocketConnection.CreateConnection(address),
             "babushka socket",
             total_commands,
             num_of_concurrent_tasks,
             data_size,
             data
         );
-        babushka_socket_client.dispose();
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
     if (clients_to_run == "all") {
-        const node_redis_client = createClient({ url: address });
-        await node_redis_client.connect();
         await run_client(
-            node_redis_client,
+            async () => {
+                const node_redis_client = createClient({ url: address });
+                await node_redis_client.connect();
+                return node_redis_client;
+            },
             "node_redis",
             total_commands,
             num_of_concurrent_tasks,
