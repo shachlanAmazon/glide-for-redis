@@ -61,7 +61,7 @@ impl ServerType {
             Some("tcp") => ServerType::Tcp { tls: false },
             Some("tcp+tls") => ServerType::Tcp { tls: true },
             Some("unix") => ServerType::Unix,
-            val => ServerType::Tcp { tls: false },
+            _ => ServerType::Tcp { tls: false },
         }
     }
 }
