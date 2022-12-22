@@ -11,4 +11,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 redis = { path = "../../redis-rs", features = ["aio", "tokio-comp"] }
-tokio = { version = "^1", features = ["rt", "macros", "rt-multi-thread", "time"] }
+tokio = { version = "^1.23", features = ["rt", "macros", "rt-multi-thread", "time"] }
