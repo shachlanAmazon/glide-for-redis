@@ -354,7 +354,7 @@ describe("socket memory client", () => {
             };
 
             const multiOp = async (index) => {
-                for (let i = 0; i < 100; ++i) {
+                for (let i = 0; i < 2; ++i) {
                     await singleOp(index + i);
                 }
             };

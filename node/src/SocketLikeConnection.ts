@@ -149,17 +149,12 @@ export class SocketLikeConnection {
             if (callbackIndex === undefined) {
                 throw new Error("Callback is undefined");
             }
-            if (this === undefined) {
-                throw new Error("this is undefined");
-            }
-            if (this.promiseCallbackFunctions === undefined) {
-                throw new Error("promiseCallbackFunctions is undefined");
-            }
             if (this.promiseCallbackFunctions[callbackIndex] === undefined) {
                 throw new Error(
                     `JS no results for ${callbackIndex} when parsing from ${counter}`
                 );
             }
+            console.log("Parse " + callbackIndex);
             const [resolve, reject] =
                 this.promiseCallbackFunctions[callbackIndex];
             this.availableCallbackSlots.push(callbackIndex);
@@ -302,6 +297,7 @@ export class SocketLikeConnection {
             }
 
             const length = headerLength + argOffset;
+            console.log("Write " + writeRequest.callbackIndex);
             this.writeHeaderToWriteBuffer(
                 length,
                 writeRequest.callbackIndex,
