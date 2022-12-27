@@ -5,15 +5,22 @@ using System.Text;
 
 namespace babushka
 {
-    public class AsyncSocketConnection : IDisposable
+    internal class AsyncSocketConnection : IDisposable
     {
         #region public methods
 
-        public static async Task<AsyncSocketClient> CreateSocketClient(string address)
+        public static async Task<AsyncSocketConnection> CreateSocketConnection(string address)
         {
             var socketName = await GetSocketNameAsync();
             var socket = await GetSocketAsync(socketName, address);
             return new AsyncSocketConnection(socket);
+        }
+
+        internal StartRequest(WriteRequest writeRequest)
+        {
+            var (message, task) = messageContainer.GetMessageForCall(key, value);
+            await WriteToSocketAsync(writeRequest);
+            await task;
         }
 
         public async Task SetAsync(string key, string value)
@@ -50,7 +57,7 @@ namespace babushka
         #region private types
 
         // TODO - this repetition will become unmaintainable. We need to do this in macros.
-        private enum RequestType
+        internal enum RequestType
         {
             /// Type of a set server address request. This request should happen once, when the socket connection is initialized.
             SetServerAddress = 1,
@@ -73,7 +80,7 @@ namespace babushka
             ClosingError = 3,
         }
 
-        private class WriteRequest
+        internal class WriteRequest
         {
             internal List<string> args = new();
             internal int callbackIndex;
@@ -131,7 +138,7 @@ namespace babushka
         private static async Task<Socket> GetSocketAsync(string socketName, string address)
         {
             var socket = CreateSocket(socketName);
-            await WriteToSocketAsync(socket, new[] { new WriteRequest { args = new() { address }, type = RequestType.SetServerAddress, callbackIndex = 0 } });
+            await WriteToSocketAsync(socket, new WriteRequest { args = new() { address }, type = RequestType.SetServerAddress, callbackIndex = 0 });
             var buffer = new byte[HEADER_LENGTH_IN_BYTES];
             await socket.ReceiveAsync(buffer, SocketFlags.None);
             var header = GetHeader(buffer, 0);
@@ -298,30 +305,8 @@ namespace babushka
             {
                 throw new ObjectDisposedException(null);
             }
-            await queueSemaphore.WaitAsync();
-            this.WriteRequests.Add(writeRequest);
-            queueSemaphore.Release();
-            if (!writeSemaphore.Wait(0) || !socket.Connected)
-            {
-                return;
-            }
-            while (true)
-            {
-                await queueSemaphore.WaitAsync();
-                if (this.WriteRequests.Count > 0)
-                {
-                    var queue = Interlocked.Exchange(ref this.WriteRequests, new());
-                    queueSemaphore.Release();
-                    await WriteToSocketAsync(this.socket, queue);
-                }
-                else
-                {
-                    queueSemaphore.Release();
-                    break;
-                }
-            }
 
-            writeSemaphore.Release();
+            await WriteToSocketAsync(this.socket, writeRequest);
         }
 
         private static int getHeaderLength(WriteRequest writeRequest)
@@ -334,22 +319,18 @@ namespace babushka
             return writeRequest.args.Aggregate<string, int>(0, (sum, arg) => sum + arg.Length);
         }
 
-        private static int getRequiredBufferLength(IEnumerable<WriteRequest> writeRequests)
+        private static int getRequiredBufferLength(WriteRequest writeRequest)
         {
-            return writeRequests.Aggregate<WriteRequest, int>(0, (sum, request) =>
-            {
-                return (
-                    sum +
-                    getHeaderLength(request) +
-                    // length * 3 is the maximum ratio between UTF16 byte count to UTF8 byte count.
-                    // TODO - in practice we used a small part of our arrays, and this will be very expensive on
-                    // large inputs. We can use the slightly slower Buffer.byteLength on longer strings.
-                    lengthOfStrings(request) * 3
-                );
-            });
+            return (
+                getHeaderLength(writeRequest) +
+                // length * 3 is the maximum ratio between UTF16 byte count to UTF8 byte count.
+                // TODO - in practice we used a small part of our arrays, and this will be very expensive on
+                // large inputs. We can use the slightly slower Buffer.byteLength on longer strings.
+                lengthOfStrings(writeRequest) * 3
+            );
         }
 
-        private static int WriteRequestToBuffer(byte[] buffer, int offset, WriteRequest writeRequest)
+        private static int WriteRequestToBuffer(byte[] buffer, WriteRequest writeRequest)
         {
             var encoding = Encoding.UTF8;
             var headerLength = getHeaderLength(writeRequest);
@@ -358,29 +339,24 @@ namespace babushka
             for (var i = 0; i < writeRequest.args.Count; i++)
             {
                 var arg = writeRequest.args[i];
-                var currentLength = encoding.GetBytes(arg, 0, arg.Length, buffer, length + offset);
+                var currentLength = encoding.GetBytes(arg, 0, arg.Length, buffer, length);
                 argLengths.Add(currentLength);
                 length += currentLength;
             }
-            WriteUint32ToBuffer((UInt32)length, buffer, offset);
-            WriteUint32ToBuffer((UInt32)writeRequest.callbackIndex, buffer, offset + 4);
-            WriteUint32ToBuffer((UInt32)writeRequest.type, buffer, offset + 8);
+            WriteUint32ToBuffer((UInt32)length, buffer, 0);
+            WriteUint32ToBuffer((UInt32)writeRequest.callbackIndex, buffer, 4);
+            WriteUint32ToBuffer((UInt32)writeRequest.type, buffer, 8);
             for (var i = 0; i < argLengths.Count - 1; i++)
             {
-                WriteUint32ToBuffer((UInt32)argLengths[i], buffer, offset + HEADER_LENGTH_IN_BYTES + i * 4);
+                WriteUint32ToBuffer((UInt32)argLengths[i], buffer, HEADER_LENGTH_IN_BYTES + i * 4);
             }
             return length;
         }
 
-        private static async Task WriteToSocketAsync(Socket socket, IEnumerable<WriteRequest> WriteRequests)
+        private static async Task WriteToSocketAsync(Socket socket, WriteRequest writeRequest)
         {
-            var buffer = ArrayPool<byte>.Shared.Rent(getRequiredBufferLength(WriteRequests));
-            var bytesAdded = 0;
-            foreach (var writeRequest in WriteRequests)
-            {
-                bytesAdded += WriteRequestToBuffer(buffer, bytesAdded, writeRequest);
-            }
-
+            var buffer = ArrayPool<byte>.Shared.Rent(getRequiredBufferLength(writeRequest));
+            var bytesAdded = WriteRequestToBuffer(buffer, writeRequest);
 
             var bytesWritten = 0;
             while (bytesWritten < bytesAdded)
@@ -396,9 +372,6 @@ namespace babushka
 
         private readonly Socket socket;
         private readonly MessageContainer messageContainer = new();
-        private readonly SemaphoreSlim writeSemaphore = new(1, 1);
-        private readonly SemaphoreSlim queueSemaphore = new(1, 1);
-        private List<WriteRequest> WriteRequests = new();
         /// 1 when disposed, 0 before
         private int disposedFlag = 0;
         private bool IsDisposed => disposedFlag == 1;
