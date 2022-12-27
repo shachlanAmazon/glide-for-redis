@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -389,11 +390,8 @@ namespace babushka
 
         #region private fields
 
-        private readonly Socket socket;
-        private readonly MessageContainer messageContainer = new();
-        private readonly SemaphoreSlim writeSemaphore = new(1, 1);
-        private readonly SemaphoreSlim queueSemaphore = new(1, 1);
-        private List<WriteRequest> WriteRequests = new();
+        private readonly ConcurrentQueue<AsyncSocketConnection> availableConnections = new();
+        private readonly List<AsyncSocketConnection> allConnections = new();
         /// 1 when disposed, 0 before
         private int disposedFlag = 0;
         private bool IsDisposed => disposedFlag == 1;

@@ -16,25 +16,11 @@ namespace babushka
             return new AsyncSocketConnection(socket);
         }
 
-        internal StartRequest(WriteRequest writeRequest)
+        internal async Task<Task<string?>> StartRequest(WriteRequest writeRequest)
         {
-            var (message, task) = messageContainer.GetMessageForCall(key, value);
+            var (message, task) = messageContainer.GetMessageForCall(null, null);
             await WriteToSocketAsync(writeRequest);
-            await task;
-        }
-
-        public async Task SetAsync(string key, string value)
-        {
-            var (message, task) = messageContainer.GetMessageForCall(key, value);
-            await WriteToSocketAsync(new WriteRequest { callbackIndex = message.Index, type = RequestType.SetString, args = new() { key, value } });
-            await task;
-        }
-
-        public async Task<string?> GetAsync(string key)
-        {
-            var (message, task) = messageContainer.GetMessageForCall(key, null);
-            await WriteToSocketAsync(new WriteRequest { callbackIndex = message.Index, type = RequestType.GetString, args = new() { key } });
-            return await task;
+            return task;
         }
 
         private void DisposeWithError(Exception error)
@@ -161,12 +147,7 @@ namespace babushka
 
         ~AsyncSocketConnection()
         {
-            CloseConnections();
-        }
-
-        private void CloseConnections()
-        {
-            socket.Dispose();
+            Dispose();
         }
 
         private static Header GetHeader(byte[] buffer, int position)
@@ -234,7 +215,7 @@ namespace babushka
                 }
                 if (header.responseType == ResponseType.ClosingError)
                 {
-                    this.socket.Close();
+                    DisposeWithError(new Exception(result));
                     message.SetException(new Exception(result));
                 }
             });
