@@ -57,6 +57,7 @@ pub enum ResponseType {
 pub(super) enum RequestRanges {
     ServerAddress {
         address: Range<usize>,
+        client_id: Range<usize>,
     },
     Get {
         key: Range<usize>,

@@ -96,12 +96,19 @@ impl RotatingBuffer {
         }
         // TODO - use serde for easier deserialization.
         let request = match header.request_type {
-            RequestType::ServerAddress => WholeRequest {
-                callback_index: header.callback_index,
-                request_type: RequestRanges::ServerAddress {
-                    address: header_end..next,
-                },
-                buffer,
+            RequestType::ServerAddress => {
+                let key_start = header_end + MESSAGE_LENGTH_FIELD_LENGTH;
+                let key_length =
+                    (&buffer[header_end..key_start]).read_u32::<LittleEndian>()? as usize;
+                let key_end = key_start + key_length;
+                WholeRequest {
+                    callback_index: header.callback_index,
+                    request_type: RequestRanges::ServerAddress {
+                        address: key_start..key_end,
+                        client_id: key_end..next,
+                    },
+                    buffer,
+                }
             },
             RequestType::GetString => WholeRequest {
                 callback_index: header.callback_index,

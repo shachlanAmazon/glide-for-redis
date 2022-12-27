@@ -14,6 +14,7 @@ use rsevents::{Awaitable, EventState, ManualResetEvent};
 use std::io::prelude::*;
 use std::sync::{Arc, Mutex};
 use std::{os::unix::net::UnixStream, thread};
+use rand::distributions::Alphanumeric;
 
 #[cfg(test)]
 mod socket_listener {
@@ -23,12 +24,17 @@ mod socket_listener {
         _server: RedisServer,
         socket: UnixStream,
     }
-
     fn send_address(address: String, socket: &UnixStream) {
         // Send the server address
         const CALLBACK_INDEX: u32 = 1;
+        const VALUE_LENGTH: usize = 10;
         let address = format!("redis://{}", address);
-        let message_length = address.len() + HEADER_END;
+        let client_id: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(VALUE_LENGTH)
+            .map(char::from)
+            .collect();
+        let message_length = client_id.len() + address.len() + HEADER_END + MESSAGE_LENGTH_FIELD_LENGTH;
         let mut buffer = Vec::with_capacity(message_length);
         buffer
             .write_u32::<LittleEndian>(message_length as u32)
@@ -39,7 +45,9 @@ mod socket_listener {
         buffer
             .write_u32::<LittleEndian>(RequestType::ServerAddress.to_u32().unwrap())
             .unwrap();
+        buffer.write_u32::<LittleEndian>(address.len() as u32).unwrap();
         buffer.write_all(address.as_bytes()).unwrap();
+        buffer.write_all(client_id.as_bytes()).unwrap();
         let mut socket = socket.try_clone().unwrap();
         socket.write_all(&buffer).unwrap();
         let size = socket.read(&mut buffer).unwrap();
@@ -116,7 +124,7 @@ mod socket_listener {
         const CALLBACK1_INDEX: u32 = 100;
         const CALLBACK2_INDEX: u32 = 101;
         const VALUE_LENGTH: usize = 10;
-        let key = "hello";
+        let key = "key23";
         let value = generate_random_bytes(VALUE_LENGTH);
         // Send a set request
         let message_length = VALUE_LENGTH + key.len() + HEADER_END + MESSAGE_LENGTH_FIELD_LENGTH;
@@ -199,7 +207,7 @@ mod socket_listener {
         }
         const CALLBACK_INDEX: u32 = 99;
         let mut test_basics = setup_test_basics();
-        let key = "hello";
+        let key = "key22";
         let mut buffer = Vec::with_capacity(HEADER_END);
         buffer.write_u32::<LittleEndian>(17_u32).unwrap();
         buffer.write_u32::<LittleEndian>(CALLBACK_INDEX).unwrap();
@@ -240,7 +248,7 @@ mod socket_listener {
         let mut test_basics = setup_test_basics();
 
         const CALLBACK_INDEX: u32 = 99;
-        let key = "a";
+        let key = "key12";
         // Send a set request
         let message_length = HEADER_END + key.len();
         let mut buffer = Vec::with_capacity(message_length);
@@ -272,7 +280,7 @@ mod socket_listener {
         const CALLBACK1_INDEX: u32 = 100;
         const CALLBACK2_INDEX: u32 = 101;
         const VALUE_LENGTH: usize = 1000000;
-        let key = "hello";
+        let key = "key11";
         let value = generate_random_bytes(VALUE_LENGTH);
         // Send a set request
         let message_length = VALUE_LENGTH + key.len() + HEADER_END + MESSAGE_LENGTH_FIELD_LENGTH;

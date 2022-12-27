@@ -22,6 +22,9 @@ use tokio::sync::Notify;
 use tokio::task;
 use ClosingReason::*;
 use PipeListeningResult::*;
+use std::collections::HashMap;
+
+type ClientConnMap = Arc<Mutex<HashMap<String, Rc<MultiplexedConnection>>>>;
 
 /// The socket file name
 pub const SOCKET_FILE_NAME: &str = "babushka-socket";
@@ -238,7 +241,7 @@ fn handle_request(request: WholeRequest, connection: MultiplexedConnection, writ
                 )
                 .await
             }
-            RequestRanges::ServerAddress { address: _ } => {
+            RequestRanges::ServerAddress { address: _, client_id: _ } => {
                 unreachable!("Server address can only be sent once")
             }
         };
@@ -307,20 +310,38 @@ async fn parse_address_create_conn(
     writer: &Rc<Writer>,
     request: &WholeRequest,
     address_range: Range<usize>,
-) -> Result<MultiplexedConnection, BabushkaError> {
+    client_id_range: Range<usize>,
+    client_conn_map: ClientConnMap,
+) -> Result<Rc<MultiplexedConnection>, BabushkaError> {
     let address = &request.buffer[address_range];
     let address = to_babushka_result(
         std::str::from_utf8(address),
         Some("Failed to parse address"),
     )?;
-    let client = to_babushka_result(
-        Client::open(address),
-        Some("Failed to open redis-rs client"),
+    let client_id = &request.buffer[client_id_range];
+    let client_id = to_babushka_result(
+        std::str::from_utf8(client_id),
+        Some("Failed to parse client ID"),
     )?;
-    let connection = to_babushka_result(
-        client.get_multiplexed_async_connection().await,
-        Some("Failed to create a multiplexed connection"),
-    )?;
+    let client_id = client_id.to_string();
+    let mut client_conn_map = client_conn_map.lock().await;
+    let connection: Rc<MultiplexedConnection>;
+    if client_conn_map.contains_key(&client_id) {
+        println!("using existing connection!");
+        connection = client_conn_map.get(&client_id).clone().unwrap().clone();
+    } else {
+        println!("Creating a new connection!");
+        let client = to_babushka_result(
+            Client::open(address),
+            Some("Failed to open redis-rs client"),
+        )?;
+        let conn_res = to_babushka_result(
+            client.get_multiplexed_async_connection().await,
+            Some("Failed to create a multiplexed connection"),
+        )?;
+        connection = Rc::new(conn_res);
+        client_conn_map.insert(client_id, connection.clone());
+    };
 
     // Send response
     write_null_response_header(&writer.accumulated_outputs, request.callback_index)
@@ -332,7 +353,8 @@ async fn parse_address_create_conn(
 async fn wait_for_server_address_create_conn(
     client_listener: &mut SocketListener,
     writer: &Rc<Writer>,
-) -> Result<MultiplexedConnection, BabushkaError> {
+    client_conn_map: ClientConnMap,
+) -> Result<Rc<MultiplexedConnection>, BabushkaError> {
     // Wait for the server's address
     match client_listener.next_values().await {
         Closed(reason) => {
@@ -346,7 +368,8 @@ async fn wait_for_server_address_create_conn(
                 match request.request_type.clone() {
                     RequestRanges::ServerAddress {
                         address: address_range,
-                    } => return parse_address_create_conn(writer, request, address_range).await,
+                        client_id: client_range,
+                    } => return parse_address_create_conn(writer, request, address_range, client_range, client_conn_map).await,
                     _ => {
                         return Err(BabushkaError::BaseError(
                             "Received another request before receiving server address".to_string(),
@@ -377,6 +400,7 @@ async fn listen_on_client_stream(
     socket: UnixStream,
     notify_close: Arc<Notify>,
     connected_clients: Arc<AtomicUsize>,
+    client_conn_map: ClientConnMap,
 ) {
     let socket = Rc::new(socket);
     // Spawn a new task to listen on this client's stream
@@ -388,7 +412,7 @@ async fn listen_on_client_stream(
         lock: write_lock,
         accumulated_outputs,
     });
-    let connection = match wait_for_server_address_create_conn(&mut client_listener, &writer).await
+    let connection = match wait_for_server_address_create_conn(&mut client_listener, &writer, client_conn_map).await
     {
         Ok(conn) => conn,
         Err(BabushkaError::CloseError(_reason)) => {
@@ -435,6 +459,7 @@ where
     let local = task::LocalSet::new();
     let connected_clients = Arc::new(AtomicUsize::new(0));
     let notify_close = Arc::new(Notify::new());
+    let client_conn_map = Arc::new(Mutex::new(HashMap::new()));
     init_callback(Ok(get_socket_path()));
     local.run_until(async move {
         loop {
@@ -445,7 +470,7 @@ where
                         let cloned_close_notifier = notify_close.clone();
                         let cloned_connected_clients = connected_clients.clone();
                         cloned_connected_clients.fetch_add(1, Ordering::Relaxed);
-                        task::spawn_local(listen_on_client_stream(stream, cloned_close_notifier.clone(), cloned_connected_clients));
+                        task::spawn_local(listen_on_client_stream(stream, cloned_close_notifier.clone(), cloned_connected_clients, client_conn_map.clone()));
                     } else if listen_v.is_err() {
                         close_socket();
                         return;
