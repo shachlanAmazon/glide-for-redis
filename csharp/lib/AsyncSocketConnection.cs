@@ -5,25 +5,25 @@ using System.Text;
 
 namespace babushka
 {
-    internal class AsyncSocketConnection : IDisposable
+    internal class AsyncSocketConnection
     {
-        #region public methods
+        #region internal methods
 
-        public static async Task<AsyncSocketConnection> CreateSocketConnection(string address)
+        internal static async Task<AsyncSocketConnection> CreateSocketConnection(string socketName, string address, UInt64 clientIdentifier)
         {
-            var socketName = await GetSocketNameAsync();
-            var socket = await GetSocketAsync(socketName, address);
+            var socket = await GetSocketAsync(socketName, address, clientIdentifier);
             return new AsyncSocketConnection(socket);
         }
 
         internal async Task<Task<string?>> StartRequest(WriteRequest writeRequest)
         {
             var (message, task) = messageContainer.GetMessageForCall(null, null);
+            writeRequest.callbackIndex = message.Index;
             await WriteToSocketAsync(writeRequest);
             return task;
         }
 
-        private void DisposeWithError(Exception error)
+        internal void DisposeWithError(Exception error)
         {
             if (Interlocked.CompareExchange(ref this.disposedFlag, 1, 0) == 1)
             {
@@ -33,12 +33,12 @@ namespace babushka
             messageContainer.DisposeWithError(error);
         }
 
-        public void Dispose()
+        internal void Dispose()
         {
             DisposeWithError(new ObjectDisposedException(null));
         }
 
-        #endregion public methods
+        #endregion internal methods
 
         #region private types
 
@@ -87,41 +87,8 @@ namespace babushka
 
         #region private methods
 
-        /// Triggers the creation of a Rust-side socket server if one isn't running, and returns the name of the socket the server is listening on.
-        private static Task<string> GetSocketNameAsync()
-        {
-            var completionSource = new TaskCompletionSource<string>();
-            InitCallback initCallback = (IntPtr successPointer, IntPtr errorPointer) =>
-            {
-                if (successPointer != IntPtr.Zero)
-                {
-                    var address = Marshal.PtrToStringAnsi(successPointer);
-                    if (address is not null)
-                    {
-                        completionSource.SetResult(address);
-                    }
-                    else
-                    {
-                        completionSource.SetException(new Exception("Received address that couldn't be converted to string"));
-                    }
-                }
-                else if (errorPointer != IntPtr.Zero)
-                {
-                    var errorMessage = Marshal.PtrToStringAnsi(errorPointer);
-                    completionSource.SetException(new Exception(errorMessage));
-                }
-                else
-                {
-                    completionSource.SetException(new Exception("Did not receive results from init callback"));
-                }
-            };
-            var callbackPointer = Marshal.GetFunctionPointerForDelegate(initCallback);
-            StartSocketListener(callbackPointer);
-            return completionSource.Task;
-        }
-
         /// Returns a new ready to use socket.
-        private static async Task<Socket> GetSocketAsync(string socketName, string address)
+        private static async Task<Socket> GetSocketAsync(string socketName, string address, UInt64 clientIdentifier)
         {
             var socket = CreateSocket(socketName);
             await WriteToSocketAsync(socket, new WriteRequest { args = new() { address }, type = RequestType.SetServerAddress, callbackIndex = 0 });
@@ -311,16 +278,20 @@ namespace babushka
             );
         }
 
-        private static int WriteRequestToBuffer(byte[] buffer, WriteRequest writeRequest)
+        private static int WriteRequestToBuffer(byte[] buffer, WriteRequest writeRequest, byte[]? additionalData)
         {
             var encoding = Encoding.UTF8;
             var headerLength = getHeaderLength(writeRequest);
             var length = headerLength;
+            if (additionalData is not null)
+            {
+                additionalData.CopyTo(buffer, length);
+            }
             var argLengths = new List<int>(writeRequest.args.Count);
             for (var i = 0; i < writeRequest.args.Count; i++)
             {
                 var arg = writeRequest.args[i];
-                var currentLength = encoding.GetBytes(arg, 0, arg.Length, buffer, length);
+                var currentLength = encoding.GetBytes(arg, 0, arg.Length, buffer, length + (additionalData?.Length ?? 0));
                 argLengths.Add(currentLength);
                 length += currentLength;
             }
@@ -331,13 +302,14 @@ namespace babushka
             {
                 WriteUint32ToBuffer((UInt32)argLengths[i], buffer, HEADER_LENGTH_IN_BYTES + i * 4);
             }
+
             return length;
         }
 
-        private static async Task WriteToSocketAsync(Socket socket, WriteRequest writeRequest)
+        private static async Task WriteToSocketAsync(Socket socket, WriteRequest writeRequest, byte[]? additionalData = null)
         {
-            var buffer = ArrayPool<byte>.Shared.Rent(getRequiredBufferLength(writeRequest));
-            var bytesAdded = WriteRequestToBuffer(buffer, writeRequest);
+            var buffer = ArrayPool<byte>.Shared.Rent(getRequiredBufferLength(writeRequest) + (additionalData?.Length ?? 0));
+            var bytesAdded = WriteRequestToBuffer(buffer, writeRequest, additionalData);
 
             var bytesWritten = 0;
             while (bytesWritten < bytesAdded)
