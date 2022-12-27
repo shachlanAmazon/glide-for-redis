@@ -5,7 +5,7 @@ using System.Text;
 
 namespace babushka
 {
-    public class AsyncSocketClient : IDisposable
+    public class AsyncSocketConnection : IDisposable
     {
         #region public methods
 
@@ -13,19 +13,19 @@ namespace babushka
         {
             var socketName = await GetSocketNameAsync();
             var socket = await GetSocketAsync(socketName, address);
-            return new AsyncSocketClient(socket);
+            return new AsyncSocketConnection(socket);
         }
 
         public async Task SetAsync(string key, string value)
         {
-            var (message, task) = messageContainer.GetMessageForCall(null, null);
+            var (message, task) = messageContainer.GetMessageForCall(key, value);
             await WriteToSocketAsync(new WriteRequest { callbackIndex = message.Index, type = RequestType.SetString, args = new() { key, value } });
             await task;
         }
 
         public async Task<string?> GetAsync(string key)
         {
-            var (message, task) = messageContainer.GetMessageForCall(null, null);
+            var (message, task) = messageContainer.GetMessageForCall(key, null);
             await WriteToSocketAsync(new WriteRequest { callbackIndex = message.Index, type = RequestType.GetString, args = new() { key } });
             return await task;
         }
@@ -146,15 +146,20 @@ namespace babushka
             return socket;
         }
 
-        private AsyncSocketClient(Socket socket)
+        private AsyncSocketConnection(Socket socket)
         {
             this.socket = socket;
             StartListeningOnReadSocket();
         }
 
-        ~AsyncSocketClient()
+        ~AsyncSocketConnection()
         {
-            Dispose();
+            CloseConnections();
+        }
+
+        private void CloseConnections()
+        {
+            socket.Dispose();
         }
 
         private static Header GetHeader(byte[] buffer, int position)
