@@ -91,7 +91,7 @@ namespace babushka
         private static async Task<Socket> GetSocketAsync(string socketName, string address, UInt64 clientIdentifier)
         {
             var socket = CreateSocket(socketName);
-            await WriteToSocketAsync(socket, new WriteRequest { args = new() { address }, type = RequestType.SetServerAddress, callbackIndex = 0 });
+            await WriteToSocketAsync(socket, new WriteRequest { args = new() { address }, type = RequestType.SetServerAddress, callbackIndex = 0 }, BitConverter.GetBytes(clientIdentifier));
             var buffer = new byte[HEADER_LENGTH_IN_BYTES];
             await socket.ReceiveAsync(buffer, SocketFlags.None);
             var header = GetHeader(buffer, 0);
