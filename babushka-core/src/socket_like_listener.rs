@@ -1,8 +1,9 @@
+use crate::fake_multiplexer::FakeMultiplexer;
+
 use super::{headers::*, rotating_buffer::RotatingBuffer};
 use bytes::BufMut;
 use num_traits::ToPrimitive;
-use redis::aio::MultiplexedConnection;
-use redis::{AsyncCommands, RedisResult};
+use redis::RedisResult;
 use redis::{Client, RedisError};
 use std::cell::RefCell;
 use std::cmp::min;
@@ -110,7 +111,7 @@ async fn send_set_request(
     key_range: Range<usize>,
     value_range: Range<usize>,
     callback_index: u32,
-    mut connection: MultiplexedConnection,
+    mut connection: FakeMultiplexer,
     accumulated_outputs: Rc<RefCell<Vec<u8>>>,
     values_written_notifier: Rc<Notify>,
 ) -> RedisResult<()> {
@@ -126,7 +127,7 @@ async fn send_get_request(
     vec: SharedBuffer,
     key_range: Range<usize>,
     callback_index: u32,
-    mut connection: MultiplexedConnection,
+    mut connection: FakeMultiplexer,
     accumulated_outputs: Rc<RefCell<Vec<u8>>>,
     values_written_notifier: Rc<Notify>,
 ) -> RedisResult<()> {
@@ -153,7 +154,7 @@ async fn send_get_request(
 
 fn handle_request(
     request: WholeRequest,
-    connection: MultiplexedConnection,
+    connection: FakeMultiplexer,
     accumulated_outputs: Rc<RefCell<Vec<u8>>>,
     values_written_notifier: Rc<Notify>,
 ) {
@@ -221,7 +222,7 @@ async fn write_error(
 
 async fn handle_requests(
     received_requests: Vec<WholeRequest>,
-    connection: &MultiplexedConnection,
+    connection: &FakeMultiplexer,
     accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
     values_written_notifier: &Rc<Notify>,
 ) {
@@ -254,20 +255,17 @@ async fn parse_address_create_conn(
     address_range: Range<usize>,
     read_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
     accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
-) -> Result<MultiplexedConnection, BabushkaError> {
+) -> Result<FakeMultiplexer, BabushkaError> {
     let address = &request.buffer[address_range];
     let address = to_babushka_result(
         std::str::from_utf8(address),
         Some("Failed to parse address"),
     )?;
-    let client = to_babushka_result(
+    let _client = to_babushka_result(
         Client::open(address),
         Some("Failed to open redis-rs client"),
     )?;
-    let connection = to_babushka_result(
-        client.get_multiplexed_async_connection().await,
-        Some("Failed to create a multiplexed connection"),
-    )?;
+    let connection = FakeMultiplexer {};
 
     let Some(mut write_request) = read_request_receiver.recv().await else {
         return Err(BabushkaError::CloseError(ClosingReason2::AllConnectionsClosed));
@@ -293,7 +291,7 @@ async fn wait_for_server_address_create_conn(
     client_listener: &mut SocketListener,
     read_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
     accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
-) -> Result<MultiplexedConnection, BabushkaError> {
+) -> Result<FakeMultiplexer, BabushkaError> {
     // Wait for the server's address
     let request = client_listener.next_values().await;
     match request {
@@ -334,7 +332,7 @@ async fn wait_for_server_address_create_conn(
 async fn read_values(
     client_listener: &mut SocketListener,
     accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
-    connection: MultiplexedConnection,
+    connection: FakeMultiplexer,
 ) -> Result<(), BabushkaError> {
     loop {
         match client_listener.next_values().await {

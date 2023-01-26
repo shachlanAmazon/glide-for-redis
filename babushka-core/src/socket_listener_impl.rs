@@ -1,9 +1,10 @@
+use crate::fake_multiplexer::FakeMultiplexer;
+
 use super::{headers::*, rotating_buffer::RotatingBuffer};
 use bytes::BufMut;
 use futures::stream::StreamExt;
 use num_traits::ToPrimitive;
-use redis::aio::MultiplexedConnection;
-use redis::{AsyncCommands, RedisResult};
+use redis::RedisResult;
 use redis::{Client, RedisError};
 use signal_hook::consts::signal::*;
 use signal_hook_tokio::Signals;
@@ -179,7 +180,7 @@ async fn send_set_request(
     key_range: Range<usize>,
     value_range: Range<usize>,
     callback_index: u32,
-    mut connection: MultiplexedConnection,
+    mut connection: FakeMultiplexer,
     writer: Rc<Writer>,
 ) -> RedisResult<()> {
     connection
@@ -194,7 +195,7 @@ async fn send_get_request(
     vec: SharedBuffer,
     key_range: Range<usize>,
     callback_index: u32,
-    mut connection: MultiplexedConnection,
+    mut connection: FakeMultiplexer,
     writer: Rc<Writer>,
 ) -> RedisResult<()> {
     let result: Option<Vec<u8>> = connection.get(&vec[key_range]).await?;
@@ -217,7 +218,7 @@ async fn send_get_request(
     Ok(())
 }
 
-fn handle_request(request: WholeRequest, connection: MultiplexedConnection, writer: Rc<Writer>) {
+fn handle_request(request: WholeRequest, connection: FakeMultiplexer, writer: Rc<Writer>) {
     task::spawn_local(async move {
         let result = match request.request_type {
             RequestRanges::Get { key: key_range } => {
@@ -282,7 +283,7 @@ async fn write_error(
 
 async fn handle_requests(
     received_requests: Vec<WholeRequest>,
-    connection: &MultiplexedConnection,
+    connection: &FakeMultiplexer,
     writer: &Rc<Writer>,
 ) {
     // TODO - can use pipeline here, if we're fine with the added latency.
@@ -313,20 +314,17 @@ async fn parse_address_create_conn(
     writer: &Rc<Writer>,
     request: &WholeRequest,
     address_range: Range<usize>,
-) -> Result<MultiplexedConnection, BabushkaError> {
+) -> Result<FakeMultiplexer, BabushkaError> {
     let address = &request.buffer[address_range];
     let address = to_babushka_result(
         std::str::from_utf8(address),
         Some("Failed to parse address"),
     )?;
-    let client = to_babushka_result(
+    let _client = to_babushka_result(
         Client::open(address),
         Some("Failed to open redis-rs client"),
     )?;
-    let connection = to_babushka_result(
-        client.get_multiplexed_async_connection().await,
-        Some("Failed to create a multiplexed connection"),
-    )?;
+    let connection = FakeMultiplexer {};
 
     // Send response
     write_null_response_header(&writer.accumulated_outputs, request.callback_index)
@@ -338,7 +336,7 @@ async fn parse_address_create_conn(
 async fn wait_for_server_address_create_conn(
     client_listener: &mut SocketListener,
     writer: &Rc<Writer>,
-) -> Result<MultiplexedConnection, BabushkaError> {
+) -> Result<FakeMultiplexer, BabushkaError> {
     // Wait for the server's address
     match client_listener.next_values().await {
         Closed(reason) => Err(BabushkaError::CloseError(reason)),
