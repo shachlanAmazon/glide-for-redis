@@ -6,7 +6,6 @@ use redis::{AsyncCommands, RedisResult};
 use redis::{Client, RedisError};
 use std::cell::RefCell;
 use std::cmp::min;
-use std::collections::VecDeque;
 use std::ops::{Deref, DerefMut, Range};
 use std::rc::Rc;
 use std::str;
@@ -70,32 +69,27 @@ impl SocketListener {
 }
 
 fn write_response_header(
-    accumulated_outputs: &Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
     callback_index: u32,
     response_type: ResponseType,
     length: usize,
 ) -> Result<(), io::Error> {
     let mut vec = accumulated_outputs.borrow_mut();
-    vec.extend((length as u32).to_le_bytes());
-    vec.extend(callback_index.to_le_bytes());
-    vec.extend(
-        response_type
-            .to_u32()
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Response type {:?} wasn't found", response_type),
-                )
-            })?
-            .to_le_bytes(),
-    );
+    vec.put_u32_le(length as u32);
+    vec.put_u32_le(callback_index);
+    vec.put_u32_le(response_type.to_u32().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Response type {:?} wasn't found", response_type),
+        )
+    })?);
 
     assert!(!vec.is_empty());
     Ok(())
 }
 
 fn write_null_response_header(
-    accumulated_outputs: &Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
     callback_index: u32,
 ) -> Result<(), io::Error> {
     write_response_header(
@@ -106,9 +100,9 @@ fn write_null_response_header(
     )
 }
 
-fn write_slice_to_output(accumulated_outputs: &RefCell<VecDeque<u8>>, bytes_to_write: &[u8]) {
+fn write_slice_to_output(accumulated_outputs: &RefCell<Vec<u8>>, bytes_to_write: &[u8]) {
     let mut vec = accumulated_outputs.borrow_mut();
-    vec.extend(bytes_to_write.iter());
+    vec.extend_from_slice(bytes_to_write);
 }
 
 async fn send_set_request(
@@ -117,7 +111,7 @@ async fn send_set_request(
     value_range: Range<usize>,
     callback_index: u32,
     mut connection: MultiplexedConnection,
-    accumulated_outputs: Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: Rc<RefCell<Vec<u8>>>,
     values_written_notifier: Rc<Notify>,
 ) -> RedisResult<()> {
     connection
@@ -133,7 +127,7 @@ async fn send_get_request(
     key_range: Range<usize>,
     callback_index: u32,
     mut connection: MultiplexedConnection,
-    accumulated_outputs: Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: Rc<RefCell<Vec<u8>>>,
     values_written_notifier: Rc<Notify>,
 ) -> RedisResult<()> {
     let result: Option<Vec<u8>> = connection.get(&vec[key_range]).await?;
@@ -160,7 +154,7 @@ async fn send_get_request(
 fn handle_request(
     request: WholeRequest,
     connection: MultiplexedConnection,
-    accumulated_outputs: Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: Rc<RefCell<Vec<u8>>>,
     values_written_notifier: Rc<Notify>,
 ) {
     task::spawn_local(async move {
@@ -212,7 +206,7 @@ async fn write_error(
     err: RedisError,
     callback_index: u32,
     response_type: ResponseType,
-    accumulated_outputs: &Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
     values_written_notifier: &Rc<Notify>,
 ) {
     let err_str = err.to_string();
@@ -228,7 +222,7 @@ async fn write_error(
 async fn handle_requests(
     received_requests: Vec<WholeRequest>,
     connection: &MultiplexedConnection,
-    accumulated_outputs: &Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
     values_written_notifier: &Rc<Notify>,
 ) {
     for request in received_requests {
@@ -259,7 +253,7 @@ async fn parse_address_create_conn(
     request: &WholeRequest,
     address_range: Range<usize>,
     read_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
-    accumulated_outputs: &Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
 ) -> Result<MultiplexedConnection, BabushkaError> {
     let address = &request.buffer[address_range];
     let address = to_babushka_result(
@@ -286,13 +280,11 @@ async fn parse_address_create_conn(
 
     let mut vec = accumulated_outputs.borrow_mut();
     assert!(vec.len() <= reference.len()); // otherwise write isn't possible.
-    let slice = vec.as_slices().0;
-    let bytes_to_write = min(reference.remaining_mut(), slice.len());
-    reference.put(&slice[..bytes_to_write]);
-    vec.drain(0..bytes_to_write);
+    let written_bytes = vec.len();
+    reference.put(vec.drain(0..written_bytes).as_slice());
 
     let completion = write_request.completion;
-    completion((bytes_to_write, 0));
+    completion((written_bytes, 0));
 
     Ok(connection)
 }
@@ -300,7 +292,7 @@ async fn parse_address_create_conn(
 async fn wait_for_server_address_create_conn(
     client_listener: &mut SocketListener,
     read_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
-    accumulated_outputs: &Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
 ) -> Result<MultiplexedConnection, BabushkaError> {
     // Wait for the server's address
     let request = client_listener.next_values().await;
@@ -341,7 +333,7 @@ async fn wait_for_server_address_create_conn(
 
 async fn read_values(
     client_listener: &mut SocketListener,
-    accumulated_outputs: &Rc<RefCell<VecDeque<u8>>>,
+    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
     connection: MultiplexedConnection,
 ) -> Result<(), BabushkaError> {
     loop {
@@ -364,7 +356,7 @@ async fn read_values(
 
 async fn write_accumulated_outputs(
     write_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
-    accumulated_outputs: &RefCell<VecDeque<u8>>,
+    accumulated_outputs: &RefCell<Vec<u8>>,
     read_possible: &Rc<Notify>,
 ) -> Result<(), BabushkaError> {
     loop {
@@ -381,13 +373,10 @@ async fn write_accumulated_outputs(
             }
 
             assert!(!vec.is_empty());
-
             let mut reference = write_request.buffer.as_mut().as_mut();
 
-            let slice = vec.as_slices().0;
-            let bytes_to_write = min(reference.remaining_mut(), slice.len());
-            reference.put(&slice[..bytes_to_write]);
-            vec.drain(0..bytes_to_write);
+            let bytes_to_write = min(reference.len(), vec.len());
+            reference.put(vec.drain(0..bytes_to_write).as_slice());
             if !vec.is_empty() {
                 read_possible.notify_one();
             }
@@ -412,7 +401,7 @@ async fn listen_on_client_stream(
 ) -> Result<(), BabushkaError> {
     let notifier = Rc::new(Notify::new());
     let mut client_listener = SocketListener::new(write_request_receiver, notifier.clone());
-    let accumulated_outputs = Rc::new(RefCell::new(VecDeque::new()));
+    let accumulated_outputs = Rc::new(RefCell::new(Vec::new()));
     let connection = wait_for_server_address_create_conn(
         &mut client_listener,
         &mut read_request_receiver,
