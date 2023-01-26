@@ -287,8 +287,8 @@ async fn parse_address_create_conn(
     let mut vec = accumulated_outputs.borrow_mut();
     assert!(vec.len() <= reference.len()); // otherwise write isn't possible.
     let slice = vec.as_slices().0;
-    let bytes_to_write = min(reference.len(), slice.len());
-    reference.put(slice);
+    let bytes_to_write = min(reference.remaining_mut(), slice.len());
+    reference.put(&slice[..bytes_to_write]);
     vec.drain(0..bytes_to_write);
 
     let completion = write_request.completion;
@@ -385,8 +385,8 @@ async fn write_accumulated_outputs(
             let mut reference = write_request.buffer.as_mut().as_mut();
 
             let slice = vec.as_slices().0;
-            let bytes_to_write = min(reference.len(), slice.len());
-            reference.put(slice);
+            let bytes_to_write = min(reference.remaining_mut(), slice.len());
+            reference.put(&slice[..bytes_to_write]);
             vec.drain(0..bytes_to_write);
             if !vec.is_empty() {
                 read_possible.notify_one();
