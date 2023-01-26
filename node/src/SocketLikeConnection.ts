@@ -83,7 +83,7 @@ export class SocketLikeConnection {
             if (length === 0) {
                 throw new Error("length 0");
             }
-            if (counter + length > dataArray.byteLength) {
+            if (counter + length > bytesToParse) {
                 this.remainingReadData = new Uint8Array(
                     dataArray.buffer,
                     counter,
@@ -134,6 +134,8 @@ export class SocketLikeConnection {
 
         if (counter == bytesToParse) {
             this.remainingReadData = undefined;
+        } else if (counter > bytesToParse) {
+            throw new Error(`${counter} ${bytesToParse}`);
         } else {
             this.remainingReadData = new Uint8Array(
                 dataArray.buffer,
