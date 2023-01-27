@@ -5,6 +5,7 @@
     "main": "build-ts/index.js",
     "types": "build-ts/index.d.ts",
     "dependencies": {
+        "@types/stats-lite": "^2.2.0",
         "acorn": "^8.7.1",
         "acorn-jsx": "^5.3.2",
         "aggregate-error": "^3.1.0",
@@ -247,6 +248,7 @@
         "path-key": "^3.1.1",
         "path-parse": "^1.0.7",
         "path-type": "^3.0.0",
+        "percentile": "^1.6.0",
         "picocolors": "^1.0.0",
         "picomatch": "^2.3.1",
         "pidtree": "^0.3.1",
@@ -295,6 +297,7 @@
         "spdx-license-ids": "^3.0.11",
         "sprintf-js": "^1.0.3",
         "stack-utils": "^2.0.5",
+        "stats-lite": "^2.2.0",
         "string-argv": "^0.3.1",
         "string-length": "^4.0.2",
         "string-width": "^4.2.3",

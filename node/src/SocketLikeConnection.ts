@@ -1,4 +1,4 @@
-import { BabushkaInternal, SocketLikeClient } from "../";
+import { BabushkaInternal, SocketLikeClient, OpsLogger } from "../";
 const {
     StartSocketLikeConnection,
     HEADER_LENGTH_IN_BYTES,
@@ -29,6 +29,7 @@ export class SocketLikeConnection {
     private bufferedWriteRequests: WriteRequest[] = [];
     private writeInProgress = false;
     private remainingReadData: Uint8Array | undefined;
+    private logger = new OpsLogger();
 
     private moveRemainingReadData(buffer: ArrayBuffer) {
         if (!this.remainingReadData) {
@@ -69,12 +70,15 @@ export class SocketLikeConnection {
         );
     }
 
-    private async read() {
+    private async read(): Promise<number> {
         if (!this.socket) {
-            return;
+            return 0;
         }
         const dataArray = this.getAvailableReadArray();
-        const [bytesRead, bytesRemaining] = await this.socket.read(dataArray);
+        const [bytesRead, bytesRemaining] = await this.logger.read(
+            () => this.socket!!.read(dataArray),
+            ([a, b]: [number, number]) => a
+        );
         const bytesToParse = (this.remainingReadData?.length ?? 0) + bytesRead;
         let counter = 0;
         while (counter <= bytesToParse - HEADER_LENGTH_IN_BYTES) {
@@ -90,7 +94,7 @@ export class SocketLikeConnection {
                     bytesToParse - counter
                 );
                 this.increaseReadBufferSize(Math.max(bytesRemaining, length));
-                return;
+                return bytesRead;
             }
             const callbackIndex = header.getUint32(4, true);
             const responseType = header.getUint32(8, true) as ResponseType;
@@ -147,6 +151,7 @@ export class SocketLikeConnection {
         if (this.backingReadBuffer.byteLength < bytesRemaining) {
             this.increaseReadBufferSize(bytesRemaining);
         }
+        return bytesRead;
     }
 
     private async loopReading() {
@@ -192,6 +197,10 @@ export class SocketLikeConnection {
                 true
             );
         }
+    }
+
+    public getPrints(): Record<string, number> {
+        return this.logger.getPrints();
     }
 
     private getHeaderLength(writeRequest: WriteRequest) {
@@ -268,7 +277,7 @@ export class SocketLikeConnection {
         }
 
         const uint8Array = new Uint8Array(this.backingWriteBuffer, 0, cursor);
-        await this.socket.write(uint8Array);
+        await this.logger.write(() => this.socket!!.write(uint8Array), cursor);
         if (this.bufferedWriteRequests.length > 0) {
             await this.writeBufferedRequestsToSocket();
         } else {

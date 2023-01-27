@@ -1,4 +1,4 @@
-import { BabushkaInternal } from "../";
+import { BabushkaInternal, OpsLogger } from "../";
 import * as net from "net";
 import { Logger } from "./Logger";
 const {
@@ -31,8 +31,14 @@ export class SocketConnection {
     private bufferedWriteRequests: WriteRequest[] = [];
     private writeInProgress = false;
     private remainingReadData: Uint8Array | undefined;
+    private logger = new OpsLogger();
+
+    public getPrints(): Record<string, number> {
+        return this.logger.getPrints();
+    }
 
     private handleReadData(data: Buffer) {
+        this.logger.endRead(data.byteLength);
         const dataArray = this.remainingReadData
             ? this.concatBuffers(this.remainingReadData, data)
             : new Uint8Array(data.buffer, data.byteOffset, data.length);
@@ -94,6 +100,7 @@ export class SocketConnection {
         Logger.instance.log("info", "connection", `construct socket`);
 
         this.socket = socket;
+        this.socket.read;
         this.socket
             .on("data", (data) => this.handleReadData(data))
             .on("error", (err) => {
@@ -177,7 +184,7 @@ export class SocketConnection {
         }, 0);
     }
 
-    private writeBufferedRequestsToSocket() {
+    private async writeBufferedRequestsToSocket() {
         this.writeInProgress = true;
         const writeRequests = this.bufferedWriteRequests.splice(
             0,
@@ -219,7 +226,9 @@ export class SocketConnection {
         }
 
         const uint8Array = new Uint8Array(this.backingWriteBuffer, 0, cursor);
+        this.logger.startWrite();
         this.socket.write(uint8Array, undefined, () => {
+            this.logger.endWrite(cursor);
             if (this.bufferedWriteRequests.length > 0) {
                 this.writeBufferedRequestsToSocket();
             } else {

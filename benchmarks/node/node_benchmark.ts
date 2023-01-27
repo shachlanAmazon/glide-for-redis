@@ -35,6 +35,7 @@ const bench_json_results: object[] = [];
 interface IAsyncClient {
     set: (key: string, value: string) => Promise<any>;
     get: (key: string) => Promise<string | null>;
+    getPrints(): Record<string, number>;
 }
 
 function generate_value(size: number): string {
@@ -159,30 +160,12 @@ async function run_client(
     );
     const tps = Math.round(counter / time);
 
-    const get_non_existing_latencies =
-        action_latencies[ChosenAction.GET_NON_EXISTING];
-    const get_non_existing_latency_results = latency_results(
-        "get_non_existing",
-        get_non_existing_latencies
-    );
-
-    const get_existing_latencies = action_latencies[ChosenAction.GET_EXISTING];
-    const get_existing_latency_results = latency_results(
-        "get_existing",
-        get_existing_latencies
-    );
-
-    const set_latencies = action_latencies[ChosenAction.SET];
-    const set_latency_results = latency_results("set", set_latencies);
-
     const json_res = {
         client: client_name,
         num_of_tasks: num_of_concurrent_tasks,
         data_size,
         tps,
-        ...set_latency_results,
-        ...get_existing_latency_results,
-        ...get_non_existing_latency_results,
+        ...client.getPrints(),
     };
     bench_json_results.push(json_res);
     console.log(`Done ${client_name} ${num_of_concurrent_tasks} ${data_size}`);
@@ -201,15 +184,15 @@ async function main(
         clients_to_run == "all" ||
         clients_to_run == "babushka"
     ) {
-        const babushka_client = await AsyncClient.CreateConnection(address);
-        await run_client(
-            babushka_client,
-            "babushka FFI",
-            total_commands,
-            num_of_concurrent_tasks,
-            data_size,
-            data
-        );
+        // const babushka_client = await AsyncClient.CreateConnection(address);
+        // await run_client(
+        //     babushka_client,
+        //     "babushka FFI",
+        //     total_commands,
+        //     num_of_concurrent_tasks,
+        //     data_size,
+        //     data
+        // );
     }
 
     if (
@@ -246,16 +229,16 @@ async function main(
     }
 
     if (clients_to_run == "all") {
-        const node_redis_client = createClient({ url: address });
-        await node_redis_client.connect();
-        await run_client(
-            node_redis_client,
-            "node_redis",
-            total_commands,
-            num_of_concurrent_tasks,
-            data_size,
-            data
-        );
+        // const node_redis_client = createClient({ url: address });
+        // await node_redis_client.connect();
+        // await run_client(
+        //     node_redis_client,
+        //     "node_redis",
+        //     total_commands,
+        //     num_of_concurrent_tasks,
+        //     data_size,
+        //     data
+        // );
     }
 }
 
