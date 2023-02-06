@@ -24,8 +24,8 @@ export class SocketLikeConnection {
     ][] = [];
     private readonly availableCallbackSlots: number[] = [];
     private readonly encoder = new TextEncoder();
-    private backingReadBuffer = new ArrayBuffer(1024);
-    private backingWriteBuffer = new ArrayBuffer(1024);
+    private backingReadBuffer = new Uint8Array(1024);
+    private backingWriteBuffer = new Uint8Array(1024);
     private bufferedWriteRequests: WriteRequest[] = [];
     private writeInProgress = false;
     private remainingReadData: Uint8Array | undefined;
@@ -45,12 +45,13 @@ export class SocketLikeConnection {
     }
 
     private increaseReadBufferSize(requiredAdditionalLength: number) {
-        const newBuffer = new ArrayBuffer(
+        const newBuffer = new Uint8Array(
             this.backingReadBuffer.byteLength + requiredAdditionalLength
         );
         this.moveRemainingReadData(newBuffer);
 
         this.backingReadBuffer = newBuffer;
+        this.socket?.setReadBuffer(this.backingReadBuffer);
     }
 
     private getAvailableReadArray(): Uint8Array {
@@ -76,13 +77,18 @@ export class SocketLikeConnection {
         }
         const dataArray = this.getAvailableReadArray();
         const [bytesRead, bytesRemaining] = await this.logger.read(
-            () => this.socket!!.read(dataArray),
+            () =>
+                this.socket!!.read(dataArray.byteOffset, dataArray.byteLength),
             ([a, b]: [number, number]) => a
         );
         const bytesToParse = (this.remainingReadData?.length ?? 0) + bytesRead;
         let counter = 0;
         while (counter <= bytesToParse - HEADER_LENGTH_IN_BYTES) {
-            const header = new DataView(this.backingReadBuffer, counter, 12);
+            const header = new DataView(
+                this.backingReadBuffer.buffer,
+                counter,
+                12
+            );
             const length = header.getUint32(0, true);
             if (length === 0) {
                 throw new Error("length 0");
@@ -162,6 +168,8 @@ export class SocketLikeConnection {
 
     private constructor(socket: SocketLikeClient) {
         this.socket = socket;
+        this.socket.setReadBuffer(this.backingReadBuffer);
+        this.socket.setWriteBuffer(this.backingWriteBuffer);
         this.loopReading();
     }
 
@@ -181,7 +189,7 @@ export class SocketLikeConnection {
         offset: number
     ) {
         const headerView = new DataView(
-            this.backingWriteBuffer,
+            this.backingWriteBuffer.buffer,
             offset,
             headerLength
         );
@@ -248,7 +256,8 @@ export class SocketLikeConnection {
             !this.backingWriteBuffer ||
             this.backingWriteBuffer.byteLength < requiredBufferLength
         ) {
-            this.backingWriteBuffer = new ArrayBuffer(requiredBufferLength);
+            this.backingWriteBuffer = new Uint8Array(requiredBufferLength);
+            this.socket?.setWriteBuffer(this.backingWriteBuffer);
         }
         let cursor = 0;
         for (const writeRequest of writeRequests) {
@@ -277,7 +286,10 @@ export class SocketLikeConnection {
         }
 
         const uint8Array = new Uint8Array(this.backingWriteBuffer, 0, cursor);
-        await this.logger.write(() => this.socket!!.write(uint8Array), cursor);
+        await this.logger.write(
+            () => this.socket!!.write(uint8Array.byteLength),
+            cursor
+        );
         if (this.bufferedWriteRequests.length > 0) {
             await this.writeBufferedRequestsToSocket();
         } else {

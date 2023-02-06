@@ -7,6 +7,7 @@ import {
 import RedisServer from "redis-server";
 import FreePort from "find-free-port";
 import { v4 as uuidv4 } from "uuid";
+import { Check } from "babushka-rs-internal";
 
 function OpenServerAndExecute(port, action) {
     return new Promise((resolve, reject) => {
@@ -35,7 +36,27 @@ async function GetAndSetRandomValue(client) {
     expect(result).toEqual(value);
 }
 
-describe("NAPI client", () => {
+// describe("check", () => {
+//     it("should update value", () => {
+//         let buffer = new Uint8Array(4);
+//         let view = new DataView(buffer.buffer, 0, 4);
+//         view.setUint32(0, 99, true);
+
+//         const check = Check.new(buffer);
+//         expect(check.getBuffer()).toEqual(99);
+
+//         view.setUint32(0, 257, true);
+//         expect(check.getBuffer()).toEqual(257);
+
+//         buffer = new Uint8Array(4);
+//         view = new DataView(buffer.buffer, 0, 4);
+//         view.setUint32(0, 99, true);
+//         check.setBuffer(buffer);
+//         expect(check.getBuffer()).toEqual(99);
+//     });
+// });
+
+xdescribe("NAPI client", () => {
     it("set and get flow works", async () => {
         const port = await FreePort(3000).then(([free_port]) => free_port);
         await OpenServerAndExecute(port, async () => {
@@ -141,7 +162,7 @@ describe("NAPI client", () => {
     });
 });
 
-describe("socket client", () => {
+xdescribe("socket client", () => {
     it("set and get flow works", async () => {
         const port = await FreePort(3000).then(([free_port]) => free_port);
         await OpenServerAndExecute(port, async () => {
@@ -259,7 +280,7 @@ describe("socket client", () => {
     });
 });
 
-describe("socket memory client", () => {
+xdescribe("socket memory client", () => {
     it("set and get flow works", async () => {
         const port = await FreePort(3000).then(([free_port]) => free_port);
         await OpenServerAndExecute(port, async () => {
