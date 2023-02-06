@@ -18,8 +18,8 @@ use tokio::task;
 use ClosingReason2::*;
 use PipeListeningResult::*;
 
-struct SocketListener<TWrite: Deref<Target = [u8]>> {
-    write_request_receiver: UnboundedReceiver<SocketWriteRequest<TWrite>>,
+struct SocketListener {
+    write_request_receiver: UnboundedReceiver<SocketWriteRequest>,
     rotating_buffer: RotatingBuffer,
     values_written_notifier: Rc<Notify>,
 }
@@ -35,9 +35,9 @@ impl From<ClosingReason2> for PipeListeningResult {
     }
 }
 
-impl<TWrite: Deref<Target = [u8]>> SocketListener<TWrite> {
+impl SocketListener {
     fn new(
-        read_request_receiver: UnboundedReceiver<SocketWriteRequest<TWrite>>,
+        read_request_receiver: UnboundedReceiver<SocketWriteRequest>,
         values_written_notifier: Rc<Notify>,
     ) -> Self {
         let rotating_buffer = RotatingBuffer::new(2, 65_536);
@@ -53,7 +53,7 @@ impl<TWrite: Deref<Target = [u8]>> SocketListener<TWrite> {
             let Some(read_request) = self.write_request_receiver.recv().await else {
                 return ReadSocketClosed.into();
             };
-            let reference = &read_request.buffer.as_ref()[read_request.range];
+            let reference = read_request.buffer.as_ref().as_ref();
             self.rotating_buffer
                 .current_buffer()
                 .extend_from_slice(reference);
@@ -250,10 +250,10 @@ fn to_babushka_result<T, E: std::fmt::Display>(
     })
 }
 
-async fn parse_address_create_conn<TRead: DerefMut<Target = [u8]>>(
+async fn parse_address_create_conn(
     request: &WholeRequest,
     address_range: Range<usize>,
-    read_request_receiver: &mut UnboundedReceiver<SocketReadRequest<TRead>>,
+    read_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
     accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
 ) -> Result<FakeMultiplexer, BabushkaError> {
     let address = &request.buffer[address_range];
@@ -274,7 +274,7 @@ async fn parse_address_create_conn<TRead: DerefMut<Target = [u8]>>(
     write_null_response_header(accumulated_outputs, request.callback_index)
         .expect("Failed writing address response.");
 
-    let mut reference = &mut write_request.buffer.as_mut()[write_request.range];
+    let mut reference = write_request.buffer.as_mut().as_mut();
 
     let mut vec = accumulated_outputs.borrow_mut();
     assert!(vec.len() <= reference.len()); // otherwise write isn't possible.
@@ -287,12 +287,9 @@ async fn parse_address_create_conn<TRead: DerefMut<Target = [u8]>>(
     Ok(connection)
 }
 
-async fn wait_for_server_address_create_conn<
-    TRead: DerefMut<Target = [u8]>,
-    TWrite: Deref<Target = [u8]>,
->(
-    client_listener: &mut SocketListener<TWrite>,
-    read_request_receiver: &mut UnboundedReceiver<SocketReadRequest<TRead>>,
+async fn wait_for_server_address_create_conn(
+    client_listener: &mut SocketListener,
+    read_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
     accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
 ) -> Result<FakeMultiplexer, BabushkaError> {
     // Wait for the server's address
@@ -332,8 +329,8 @@ async fn wait_for_server_address_create_conn<
     ))
 }
 
-async fn read_values<TWrite: Deref<Target = [u8]>>(
-    client_listener: &mut SocketListener<TWrite>,
+async fn read_values(
+    client_listener: &mut SocketListener,
     accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
     connection: FakeMultiplexer,
 ) -> Result<(), BabushkaError> {
@@ -355,8 +352,8 @@ async fn read_values<TWrite: Deref<Target = [u8]>>(
     }
 }
 
-async fn write_accumulated_outputs<TRead: DerefMut<Target = [u8]>>(
-    write_request_receiver: &mut UnboundedReceiver<SocketReadRequest<TRead>>,
+async fn write_accumulated_outputs(
+    write_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
     accumulated_outputs: &RefCell<Vec<u8>>,
     read_possible: &Rc<Notify>,
 ) -> Result<(), BabushkaError> {
@@ -374,7 +371,7 @@ async fn write_accumulated_outputs<TRead: DerefMut<Target = [u8]>>(
             }
 
             assert!(!vec.is_empty());
-            let mut reference = &mut write_request.buffer.as_mut()[write_request.range];
+            let mut reference = write_request.buffer.as_mut().as_mut();
 
             let bytes_to_write = min(reference.len(), vec.len());
             reference.put(vec.drain(0..bytes_to_write).as_slice());
@@ -391,14 +388,14 @@ async fn write_accumulated_outputs<TRead: DerefMut<Target = [u8]>>(
 }
 
 ///
-pub type ReadSender<TRead> = UnboundedSender<SocketReadRequest<TRead>>;
+pub type ReadSender = UnboundedSender<SocketReadRequest>;
 
 ///
-pub type WriteSender<TWrite> = UnboundedSender<SocketWriteRequest<TWrite>>;
+pub type WriteSender = UnboundedSender<SocketWriteRequest>;
 
-async fn listen_on_client_stream<TWrite: Deref<Target = [u8]>, TRead: DerefMut<Target = [u8]>>(
-    mut read_request_receiver: UnboundedReceiver<SocketReadRequest<TRead>>,
-    write_request_receiver: UnboundedReceiver<SocketWriteRequest<TWrite>>,
+async fn listen_on_client_stream(
+    mut read_request_receiver: UnboundedReceiver<SocketReadRequest>,
+    write_request_receiver: UnboundedReceiver<SocketWriteRequest>,
 ) -> Result<(), BabushkaError> {
     let notifier = Rc::new(Notify::new());
     let mut client_listener = SocketListener::new(write_request_receiver, notifier.clone());
@@ -418,15 +415,9 @@ async fn listen_on_client_stream<TWrite: Deref<Target = [u8]>, TRead: DerefMut<T
     return result;
 }
 
-async fn listen_on_socket<
-    InitCallback,
-    TWrite: Deref<Target = [u8]>,
-    TRead: DerefMut<Target = [u8]>,
->(
-    init_callback: InitCallback,
-) where
-    InitCallback:
-        FnOnce(Result<(WriteSender<TWrite>, ReadSender<TRead>), RedisError>) + Send + 'static,
+async fn listen_on_socket<InitCallback>(init_callback: InitCallback)
+where
+    InitCallback: FnOnce(Result<(WriteSender, ReadSender), RedisError>) + Send + 'static,
 {
     let local = task::LocalSet::new();
     let (read_request_sender, read_request_receiver) = unbounded_channel();
@@ -470,46 +461,35 @@ pub enum SocketRequestType {
 }
 
 ///
-pub struct SocketWriteRequest<TWrite: Deref<Target = [u8]>> {
-    buffer: TWrite,
-    range: Range<usize>,
+pub struct SocketWriteRequest {
+    buffer: Box<dyn Deref<Target = [u8]>>,
     completion: Box<dyn FnOnce(usize)>,
 }
 
 ///
-pub struct SocketReadRequest<TRead: DerefMut<Target = [u8]>> {
-    buffer: TRead,
-    range: Range<usize>,
+pub struct SocketReadRequest {
+    buffer: Box<dyn DerefMut<Target = [u8]>>,
     completion: Box<dyn FnOnce((usize, usize))>,
 }
 
-impl<TWrite: Deref<Target = [u8]>> SocketWriteRequest<TWrite> {
+impl SocketWriteRequest {
     ///
-    pub fn new(buffer: TWrite, range: Range<usize>, completion: Box<dyn FnOnce(usize)>) -> Self {
-        SocketWriteRequest {
-            buffer,
-            range,
-            completion,
-        }
+    pub fn new(buffer: Box<dyn Deref<Target = [u8]>>, completion: Box<dyn FnOnce(usize)>) -> Self {
+        SocketWriteRequest { buffer, completion }
     }
 }
 
-impl<TRead: DerefMut<Target = [u8]>> SocketReadRequest<TRead> {
+impl SocketReadRequest {
     ///
     pub fn new(
-        buffer: TRead,
-        range: Range<usize>,
+        buffer: Box<dyn DerefMut<Target = [u8]>>,
         completion: Box<dyn FnOnce((usize, usize))>,
     ) -> Self {
-        SocketReadRequest {
-            buffer,
-            range,
-            completion,
-        }
+        SocketReadRequest { buffer, completion }
     }
 }
 
-impl<TWrite: Deref<Target = [u8]>> std::fmt::Debug for SocketWriteRequest<TWrite> {
+impl std::fmt::Debug for SocketWriteRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SocketWriteRequest")
             .field("buffer", &self.buffer.as_ptr_range())
@@ -517,7 +497,7 @@ impl<TWrite: Deref<Target = [u8]>> std::fmt::Debug for SocketWriteRequest<TWrite
     }
 }
 
-impl<TRead: DerefMut<Target = [u8]>> std::fmt::Debug for SocketReadRequest<TRead> {
+impl std::fmt::Debug for SocketReadRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SocketReadRequest")
             .field("buffer", &self.buffer.as_ptr_range())
@@ -530,11 +510,9 @@ impl<TRead: DerefMut<Target = [u8]>> std::fmt::Debug for SocketReadRequest<TRead
 ///
 /// # Arguments
 /// * `init_callback` - called when the socket listener fails to initialize, with the reason for the failure.
-pub fn start_listener<InitCallback, TRead: DerefMut<Target = [u8]>, TWrite: Deref<Target = [u8]>>(
-    init_callback: InitCallback,
-) where
-    InitCallback:
-        FnOnce(Result<(WriteSender<TWrite>, ReadSender<TRead>), RedisError>) + Send + 'static,
+pub fn start_listener<InitCallback>(init_callback: InitCallback)
+where
+    InitCallback: FnOnce(Result<(WriteSender, ReadSender), RedisError>) + Send + 'static,
 {
     println!("RS start start_listener");
     thread::Builder::new()

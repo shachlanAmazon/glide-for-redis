@@ -3,14 +3,12 @@ use babushka::{
     start_listener, start_socket_listener, ReadSender, SocketReadRequest, SocketWriteRequest,
     WriteSender,
 };
-use byteorder::{LittleEndian, ReadBytesExt};
 use napi::bindgen_prelude::ToNapiValue;
 use napi::bindgen_prelude::Uint8Array;
 use napi::{Env, Error, JsObject, Result, Status};
 use napi_derive::napi;
 use redis::aio::MultiplexedConnection;
 use redis::AsyncCommands;
-use std::ops::Range;
 use std::str;
 use tokio::runtime::{Builder, Runtime};
 #[napi]
@@ -170,48 +168,25 @@ pub fn init(level: Option<Level>, file_name: Option<&str>) -> Level {
 #[napi]
 struct SocketLikeClient {
     #[allow(dead_code)]
-    write_sender: Option<WriteSender<Uint8Array>>,
-    write_buffer: Option<Uint8Array>,
-    read_sender: Option<ReadSender<Uint8Array>>,
-    read_buffer: Option<Uint8Array>,
+    write_sender: Option<WriteSender>,
+    read_sender: Option<ReadSender>,
 }
 
 #[napi]
 impl SocketLikeClient {
-    fn new(
-        write_sender: WriteSender<Uint8Array>,
-        read_sender: ReadSender<Uint8Array>,
-    ) -> SocketLikeClient {
+    fn new(write_sender: WriteSender, read_sender: ReadSender) -> SocketLikeClient {
         SocketLikeClient {
             write_sender: Some(write_sender),
             read_sender: Some(read_sender),
-            write_buffer: None,
-            read_buffer: None,
         }
-    }
-
-    #[napi]
-    #[allow(dead_code)]
-    pub fn set_read_buffer(&mut self, buffer: Uint8Array) {
-        self.read_buffer = Some(buffer);
-    }
-
-    #[napi]
-    #[allow(dead_code)]
-    pub fn set_write_buffer(&mut self, buffer: Uint8Array) {
-        self.write_buffer = Some(buffer);
     }
 
     #[napi(ts_return_type = "Promise<number>")]
     #[allow(dead_code)]
-    pub fn write(&self, env: Env, length: u32) -> Result<JsObject> {
+    pub fn write(&self, env: Env, buffer: Uint8Array) -> Result<JsObject> {
         let (deferred, promise) = env.create_deferred()?;
         let request = SocketWriteRequest::new(
-            self.write_buffer.clone().unwrap(),
-            Range::<usize> {
-                start: 0,
-                end: length as usize,
-            },
+            Box::new(buffer),
             Box::new(move |size| {
                 deferred.resolve(move |_| Ok(size as u32));
             }),
@@ -223,14 +198,10 @@ impl SocketLikeClient {
 
     #[napi(ts_return_type = "Promise<[number, number]>")]
     #[allow(dead_code)]
-    pub fn read(&self, env: Env, offset: u32, length: u32) -> Result<JsObject> {
+    pub fn read(&self, env: Env, buffer: Uint8Array) -> Result<JsObject> {
         let (deferred, promise) = env.create_deferred()?;
         let request = SocketReadRequest::new(
-            self.read_buffer.clone().unwrap(),
-            Range::<usize> {
-                start: offset as usize,
-                end: (offset + length) as usize,
-            },
+            Box::new(buffer),
             Box::new(move |(size, remaining)| {
                 let arr = [size as u32, remaining as u32];
                 deferred.resolve(move |_| Ok(arr));
@@ -268,30 +239,3 @@ pub fn start_socket_like_listener_external(env: Env) -> Result<JsObject> {
 
     Ok(promise)
 }
-
-// #[napi]
-// struct Check {
-//     buffer: Uint8Array,
-// }
-
-// #[napi]
-// impl Check {
-//     #[napi]
-//     #[allow(dead_code)]
-//     pub fn new(buffer: Uint8Array) -> Check {
-//         Check { buffer }
-//     }
-
-//     #[napi]
-//     #[allow(dead_code)]
-//     pub fn set_buffer(&mut self, buffer: Uint8Array) {
-//         self.buffer = buffer;
-//     }
-
-//     #[napi]
-//     #[allow(dead_code)]
-//     pub fn get_buffer(&self) -> u32 {
-//         let slice = self.buffer.as_ref();
-//         (&slice[..]).read_u32::<LittleEndian>().unwrap()
-//     }
-// }
