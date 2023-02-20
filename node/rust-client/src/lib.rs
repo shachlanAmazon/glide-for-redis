@@ -233,7 +233,7 @@ pub fn start_socket_like_listener_external(env: Env) -> Result<JsObject> {
             Ok((read_sender, write_sender)) => {
                 deferred.resolve(|_| Ok(SocketLikeClient::new(read_sender, write_sender)))
             }
-            Err(err) => deferred.reject(to_js_error(err)),
+            Err(err) => deferred.reject(Error::new(Status::Unknown, err)),
         };
     });
 

@@ -5,21 +5,21 @@ use bytes::BufMut;
 use num_traits::ToPrimitive;
 use redis::RedisResult;
 use redis::{Client, RedisError};
-use std::cell::RefCell;
-use std::cmp::min;
-use std::ops::{Deref, DerefMut, Range};
+use std::cell::Cell;
+use std::ops::Range;
 use std::rc::Rc;
 use std::str;
 use std::{io, thread};
 use tokio::runtime::Builder;
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use tokio::sync::mpsc::Sender;
+use tokio::sync::oneshot;
 use tokio::sync::Notify;
 use tokio::task;
 use ClosingReason2::*;
 use PipeListeningResult::*;
 
 struct SocketListener {
-    write_request_receiver: UnboundedReceiver<SocketWriteRequest>,
+    read_sender: Sender<oneshot::Sender<Vec<u8>>>,
     rotating_buffer: RotatingBuffer,
     values_written_notifier: Rc<Notify>,
 }
@@ -37,29 +37,32 @@ impl From<ClosingReason2> for PipeListeningResult {
 
 impl SocketListener {
     fn new(
-        read_request_receiver: UnboundedReceiver<SocketWriteRequest>,
+        read_sender: Sender<oneshot::Sender<Vec<u8>>>,
         values_written_notifier: Rc<Notify>,
     ) -> Self {
         let rotating_buffer = RotatingBuffer::new(2, 65_536);
         SocketListener {
-            write_request_receiver: read_request_receiver,
+            read_sender,
             rotating_buffer,
             values_written_notifier,
         }
     }
 
+    async fn request_read(&mut self) -> Result<Vec<u8>, ()> {
+        let (sender, receiver) = oneshot::channel();
+        self.read_sender.send(sender).await.map_err(|_| ())?;
+        receiver.await.map_err(|_| ())
+    }
+
     async fn next_values(&mut self) -> PipeListeningResult {
         loop {
-            let Some(read_request) = self.write_request_receiver.recv().await else {
+            let Ok(received_values) = self.request_read().await else {
                 return ReadSocketClosed.into();
             };
-            let reference = read_request.buffer.as_ref().as_ref();
+
             self.rotating_buffer
                 .current_buffer()
-                .extend_from_slice(reference);
-
-            let completion = read_request.completion;
-            completion(reference.len());
+                .extend_from_slice(received_values.as_slice());
 
             return match self.rotating_buffer.get_requests() {
                 Ok(requests) => ReceivedValues(requests),
@@ -70,12 +73,12 @@ impl SocketListener {
 }
 
 fn write_response_header(
-    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
+    accumulated_outputs: &Rc<Cell<Vec<u8>>>,
     callback_index: u32,
     response_type: ResponseType,
     length: usize,
 ) -> Result<(), io::Error> {
-    let mut vec = accumulated_outputs.borrow_mut();
+    let mut vec = accumulated_outputs.take();
     vec.put_u32_le(length as u32);
     vec.put_u32_le(callback_index);
     vec.put_u32_le(response_type.to_u32().ok_or_else(|| {
@@ -86,11 +89,12 @@ fn write_response_header(
     })?);
 
     assert!(!vec.is_empty());
+    accumulated_outputs.set(vec);
     Ok(())
 }
 
 fn write_null_response_header(
-    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
+    accumulated_outputs: &Rc<Cell<Vec<u8>>>,
     callback_index: u32,
 ) -> Result<(), io::Error> {
     write_response_header(
@@ -101,9 +105,10 @@ fn write_null_response_header(
     )
 }
 
-fn write_slice_to_output(accumulated_outputs: &RefCell<Vec<u8>>, bytes_to_write: &[u8]) {
-    let mut vec = accumulated_outputs.borrow_mut();
+fn write_slice_to_output(accumulated_outputs: &Cell<Vec<u8>>, bytes_to_write: &[u8]) {
+    let mut vec = accumulated_outputs.take();
     vec.extend_from_slice(bytes_to_write);
+    accumulated_outputs.set(vec);
 }
 
 async fn send_set_request(
@@ -112,7 +117,7 @@ async fn send_set_request(
     value_range: Range<usize>,
     callback_index: u32,
     mut connection: FakeMultiplexer,
-    accumulated_outputs: Rc<RefCell<Vec<u8>>>,
+    accumulated_outputs: Rc<Cell<Vec<u8>>>,
     values_written_notifier: Rc<Notify>,
 ) -> RedisResult<()> {
     connection
@@ -128,7 +133,7 @@ async fn send_get_request(
     key_range: Range<usize>,
     callback_index: u32,
     mut connection: FakeMultiplexer,
-    accumulated_outputs: Rc<RefCell<Vec<u8>>>,
+    accumulated_outputs: Rc<Cell<Vec<u8>>>,
     values_written_notifier: Rc<Notify>,
 ) -> RedisResult<()> {
     let result: Option<Vec<u8>> = connection.get(&vec[key_range]).await?;
@@ -155,7 +160,7 @@ async fn send_get_request(
 fn handle_request(
     request: WholeRequest,
     connection: FakeMultiplexer,
-    accumulated_outputs: Rc<RefCell<Vec<u8>>>,
+    accumulated_outputs: Rc<Cell<Vec<u8>>>,
     values_written_notifier: Rc<Notify>,
 ) {
     task::spawn_local(async move {
@@ -207,7 +212,7 @@ async fn write_error(
     err: RedisError,
     callback_index: u32,
     response_type: ResponseType,
-    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
+    accumulated_outputs: &Rc<Cell<Vec<u8>>>,
     values_written_notifier: &Rc<Notify>,
 ) {
     let err_str = err.to_string();
@@ -223,7 +228,7 @@ async fn write_error(
 async fn handle_requests(
     received_requests: Vec<WholeRequest>,
     connection: &FakeMultiplexer,
-    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
+    accumulated_outputs: &Rc<Cell<Vec<u8>>>,
     values_written_notifier: &Rc<Notify>,
 ) {
     for request in received_requests {
@@ -253,8 +258,8 @@ fn to_babushka_result<T, E: std::fmt::Display>(
 async fn parse_address_create_conn(
     request: &WholeRequest,
     address_range: Range<usize>,
-    read_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
-    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
+    write_sender: &mut Sender<Vec<u8>>,
+    accumulated_outputs: &Rc<Cell<Vec<u8>>>,
 ) -> Result<FakeMultiplexer, BabushkaError> {
     let address = &request.buffer[address_range];
     let address = to_babushka_result(
@@ -267,30 +272,19 @@ async fn parse_address_create_conn(
     )?;
     let connection = FakeMultiplexer {};
 
-    let Some(mut write_request) = read_request_receiver.recv().await else {
-        return Err(BabushkaError::CloseError(ClosingReason2::AllConnectionsClosed));
-    };
-
     write_null_response_header(accumulated_outputs, request.callback_index)
         .expect("Failed writing address response.");
 
-    let mut reference = write_request.buffer.as_mut().as_mut();
-
-    let mut vec = accumulated_outputs.borrow_mut();
-    assert!(vec.len() <= reference.len()); // otherwise write isn't possible.
-    let written_bytes = vec.len();
-    reference.put(vec.drain(0..written_bytes).as_slice());
-
-    let completion = write_request.completion;
-    completion((written_bytes, 0));
+    let vec = accumulated_outputs.take();
+    to_babushka_result(write_sender.send(vec).await, None)?;
 
     Ok(connection)
 }
 
 async fn wait_for_server_address_create_conn(
     client_listener: &mut SocketListener,
-    read_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
-    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
+    write_sender: &mut Sender<Vec<u8>>,
+    accumulated_outputs: &Rc<Cell<Vec<u8>>>,
 ) -> Result<FakeMultiplexer, BabushkaError> {
     // Wait for the server's address
     let request = client_listener.next_values().await;
@@ -310,7 +304,7 @@ async fn wait_for_server_address_create_conn(
                         return parse_address_create_conn(
                             request,
                             address_range,
-                            read_request_receiver,
+                            write_sender,
                             accumulated_outputs,
                         )
                         .await
@@ -331,7 +325,7 @@ async fn wait_for_server_address_create_conn(
 
 async fn read_values(
     client_listener: &mut SocketListener,
-    accumulated_outputs: &Rc<RefCell<Vec<u8>>>,
+    accumulated_outputs: &Rc<Cell<Vec<u8>>>,
     connection: FakeMultiplexer,
 ) -> Result<(), BabushkaError> {
     loop {
@@ -353,81 +347,52 @@ async fn read_values(
 }
 
 async fn write_accumulated_outputs(
-    write_request_receiver: &mut UnboundedReceiver<SocketReadRequest>,
-    accumulated_outputs: &RefCell<Vec<u8>>,
-    read_possible: &Rc<Notify>,
+    write_sender: &mut Sender<Vec<u8>>,
+    accumulated_outputs: &Cell<Vec<u8>>,
+    write_possible: &Rc<Notify>,
 ) -> Result<(), BabushkaError> {
     loop {
-        let Some(mut write_request) = write_request_receiver.recv().await else {
-            return Err(BabushkaError::CloseError(ClosingReason2::AllConnectionsClosed));
-        };
         // looping is required since notified() might have 2 permits - https://github.com/tokio-rs/tokio/pull/5305
-        loop {
-            read_possible.notified().await;
-            let mut vec = accumulated_outputs.borrow_mut();
-            // possible in case of 2 permits
-            if vec.is_empty() {
-                continue;
-            }
-
-            assert!(!vec.is_empty());
-            let mut reference = write_request.buffer.as_mut().as_mut();
-
-            let bytes_to_write = min(reference.len(), vec.len());
-            reference.put(vec.drain(0..bytes_to_write).as_slice());
-            if !vec.is_empty() {
-                read_possible.notify_one();
-            }
-            let remaining_vec_len = vec.len();
-
-            let completion = write_request.completion;
-            completion((bytes_to_write, remaining_vec_len));
-            break;
+        write_possible.notified().await;
+        let vec = accumulated_outputs.take();
+        // possible in case of 2 permits
+        if vec.is_empty() {
+            accumulated_outputs.set(vec);
+            continue;
         }
+
+        assert!(!vec.is_empty());
+        to_babushka_result(write_sender.send(vec).await, None)?;
     }
 }
 
-///
-pub type ReadSender = UnboundedSender<SocketReadRequest>;
-
-///
-pub type WriteSender = UnboundedSender<SocketWriteRequest>;
-
 async fn listen_on_client_stream(
-    mut read_request_receiver: UnboundedReceiver<SocketReadRequest>,
-    write_request_receiver: UnboundedReceiver<SocketWriteRequest>,
+    read_sender: Sender<oneshot::Sender<Vec<u8>>>,
+    mut write_sender: Sender<Vec<u8>>,
 ) -> Result<(), BabushkaError> {
     let notifier = Rc::new(Notify::new());
-    let mut client_listener = SocketListener::new(write_request_receiver, notifier.clone());
-    let accumulated_outputs = Rc::new(RefCell::new(Vec::new()));
+    let mut client_listener = SocketListener::new(read_sender, notifier.clone());
+    let accumulated_outputs = Rc::new(Cell::new(Vec::new()));
     let connection = wait_for_server_address_create_conn(
         &mut client_listener,
-        &mut read_request_receiver,
+        &mut write_sender,
         &accumulated_outputs,
     )
     .await
     .unwrap();
     let result = tokio::try_join!(
         read_values(&mut client_listener, &accumulated_outputs, connection),
-        write_accumulated_outputs(&mut read_request_receiver, &accumulated_outputs, &notifier)
+        write_accumulated_outputs(&mut write_sender, &accumulated_outputs, &notifier)
     )
     .map(|_| ());
     return result;
 }
 
-async fn listen_on_socket<InitCallback>(init_callback: InitCallback)
-where
-    InitCallback: FnOnce(Result<(WriteSender, ReadSender), RedisError>) + Send + 'static,
-{
+async fn connect(read_sender: Sender<oneshot::Sender<Vec<u8>>>, write_sender: Sender<Vec<u8>>) {
     let local = task::LocalSet::new();
-    let (read_request_sender, read_request_receiver) = unbounded_channel();
-    let (write_request_sender, write_request_receiver) = unbounded_channel();
-    init_callback(Ok((read_request_sender, write_request_sender)));
+
     let _ = local
-        .run_until(listen_on_client_stream(
-            write_request_receiver,
-            read_request_receiver,
-        ))
+        .run_until(listen_on_client_stream(read_sender, write_sender))
         .await;
     println!("RS done listen_on_socket");
 }
@@ -439,70 +404,15 @@ pub enum ClosingReason2 {
     ReadSocketClosed,
     /// The listener encounter an error it couldn't handle.
     UnhandledError(RedisError),
-    /// No clients left to handle, close the connection
-    AllConnectionsClosed,
 }
 
 /// Enum describing babushka errors
 #[derive(Debug)]
-pub enum BabushkaError {
+enum BabushkaError {
     /// Base error
     BaseError(String),
     /// Close error
     CloseError(ClosingReason2),
-}
-
-///
-pub enum SocketRequestType {
-    ///
-    Read,
-    ///
-    Write,
-}
-
-///
-pub struct SocketWriteRequest {
-    buffer: Box<dyn Deref<Target = [u8]>>,
-    completion: Box<dyn FnOnce(usize)>,
-}
-
-///
-pub struct SocketReadRequest {
-    buffer: Box<dyn DerefMut<Target = [u8]>>,
-    completion: Box<dyn FnOnce((usize, usize))>,
-}
-
-impl SocketWriteRequest {
-    ///
-    pub fn new(buffer: Box<dyn Deref<Target = [u8]>>, completion: Box<dyn FnOnce(usize)>) -> Self {
-        SocketWriteRequest { buffer, completion }
-    }
-}
-
-impl SocketReadRequest {
-    ///
-    pub fn new(
-        buffer: Box<dyn DerefMut<Target = [u8]>>,
-        completion: Box<dyn FnOnce((usize, usize))>,
-    ) -> Self {
-        SocketReadRequest { buffer, completion }
-    }
-}
-
-impl std::fmt::Debug for SocketWriteRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SocketWriteRequest")
-            .field("buffer", &self.buffer.as_ptr_range())
-            .finish()
-    }
-}
-
-impl std::fmt::Debug for SocketReadRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SocketReadRequest")
-            .field("buffer", &self.buffer.as_ptr_range())
-            .finish()
-    }
 }
 
 /// Creates a new thread with a main loop task listening on the socket for new connections.
@@ -510,25 +420,20 @@ impl std::fmt::Debug for SocketReadRequest {
 ///
 /// # Arguments
 /// * `init_callback` - called when the socket listener fails to initialize, with the reason for the failure.
-pub fn start_listener<InitCallback>(init_callback: InitCallback)
-where
-    InitCallback: FnOnce(Result<(WriteSender, ReadSender), RedisError>) + Send + 'static,
-{
+pub fn start_listener_internal(
+    read_sender: Sender<oneshot::Sender<Vec<u8>>>,
+    write_sender: Sender<Vec<u8>>,
+) {
     println!("RS start start_listener");
     thread::Builder::new()
         .name("socket_like_listener_thread".to_string())
         .spawn(move || {
-            let runtime = Builder::new_current_thread()
+            Builder::new_current_thread()
                 .enable_all()
                 .thread_name("socket_like_listener_thread")
-                .build();
-            match runtime {
-                Ok(runtime) => {
-                    runtime.block_on(listen_on_socket(init_callback));
-                }
-                Err(err) => init_callback(Err(err.into())),
-            };
-            println!("RS done thread");
+                .build()
+                .unwrap()
+                .block_on(connect(read_sender, write_sender));
         })
         .expect("Thread spawn failed. Cannot report error because callback was moved.");
 }
