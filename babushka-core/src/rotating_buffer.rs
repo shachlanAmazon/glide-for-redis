@@ -1,84 +1,36 @@
 use integer_encoding::VarInt;
-use lifeguard::{pool, Pool, RcRecycled, StartingSize, Supplier};
 use logger_core::log_error;
 use protobuf::Message;
 use std::{io, mem, rc::Rc};
 
-type Buffer = RcRecycled<Vec<u8>>;
-/// Buffer needs to be wrapped in Rc, because RcRecycled's clone implementation
-/// involves copying the array.
-type SharedBuffer = Rc<Buffer>;
-
 /// An object handling a arranging read buffers, and parsing the data in the buffers into requests.
 pub(super) struct RotatingBuffer {
     /// Object pool for the internal buffers.
-    pool: Rc<Pool<Vec<u8>>>,
-    /// Buffer for next read request.
-    current_read_buffer: Buffer,
+    buffer: Vec<u8>,
 }
 
 impl RotatingBuffer {
-    pub(super) fn with_pool(pool: Rc<Pool<Vec<u8>>>) -> Self {
-        let next_read = pool.new_rc();
-        RotatingBuffer {
-            pool,
-            current_read_buffer: next_read,
-        }
-    }
-
     pub(super) fn new(initial_buffers: usize, buffer_size: usize) -> Self {
-        let pool = Rc::new(
-            pool()
-                .with(StartingSize(initial_buffers))
-                .with(Supplier(move || Vec::with_capacity(buffer_size)))
-                .build(),
-        );
-        Self::with_pool(pool)
-    }
-
-    /// Adjusts the current buffer size so that it will fit required_length.
-    fn match_capacity(&mut self, required_length: usize) {
-        let extra_capacity = required_length - self.current_read_buffer.len();
-        self.current_read_buffer.reserve(extra_capacity);
-    }
-
-    /// Replace the buffer, and copy the ending of the current incomplete message to the beginning of the next buffer.
-    fn copy_from_old_buffer(
-        &mut self,
-        old_buffer: SharedBuffer,
-        required_length: Option<usize>,
-        cursor: usize,
-    ) {
-        self.match_capacity(required_length.unwrap_or_else(|| self.current_read_buffer.capacity()));
-        let old_buffer_len = old_buffer.len();
-        let slice = &old_buffer[cursor..old_buffer_len];
-        debug_assert!(self.current_read_buffer.len() == 0);
-        self.current_read_buffer.extend_from_slice(slice);
-    }
-
-    fn get_new_buffer(&mut self) -> Buffer {
-        let mut buffer = self.pool.new_rc();
-        buffer.clear();
-        buffer
+        RotatingBuffer {
+            buffer: Vec::with_capacity(buffer_size),
+        }
     }
 
     /// Parses the requests in the buffer.
     pub(super) fn get_requests<T: Message>(&mut self) -> io::Result<Vec<T>> {
-        // We replace the buffer on every call, because we want to prevent the next read from affecting existing results.
-        let new_buffer = self.get_new_buffer();
-        let backing_buffer = Rc::new(mem::replace(&mut self.current_read_buffer, new_buffer));
-        let buffer = backing_buffer.as_slice();
         let mut results: Vec<T> = vec![];
         let mut prev_position = 0;
-        let buffer_len = backing_buffer.len();
+        let buffer_len = self.buffer.len();
         while prev_position < buffer_len {
-            if let Some((request_len, bytes_read)) = u32::decode_var(&buffer[prev_position..]) {
+            if let Some((request_len, bytes_read)) = u32::decode_var(&self.buffer[prev_position..])
+            {
                 let start_pos = prev_position + bytes_read;
                 if (start_pos + request_len as usize) > buffer_len {
                     break;
                 } else {
-                    match T::parse_from_bytes(&buffer[start_pos..start_pos + request_len as usize])
-                    {
+                    match T::parse_from_bytes(
+                        &self.buffer[start_pos..start_pos + request_len as usize],
+                    ) {
                         Ok(request) => {
                             prev_position += request_len as usize + bytes_read;
                             results.push(request);
@@ -94,16 +46,16 @@ impl RotatingBuffer {
             }
         }
 
-        if prev_position != backing_buffer.len() {
-            self.copy_from_old_buffer(backing_buffer.clone(), None, prev_position);
+        if prev_position != self.buffer.len() {
+            self.buffer.drain(..prev_position);
         } else {
-            self.current_read_buffer.clear();
+            self.buffer.clear();
         }
         Ok(results)
     }
 
     pub(super) fn current_buffer(&mut self) -> &mut Vec<u8> {
-        &mut self.current_read_buffer
+        &mut self.buffer
     }
 }
 
@@ -297,10 +249,8 @@ mod tests {
             false,
         );
 
-        while rotating_buffer.current_read_buffer.len()
-            < rotating_buffer.current_read_buffer.capacity()
-        {
-            rotating_buffer.current_read_buffer.push(0_u8);
+        while rotating_buffer.buffer.len() < rotating_buffer.buffer.capacity() {
+            rotating_buffer.buffer.push(0_u8);
         }
         assert_request(
             &requests[0],
