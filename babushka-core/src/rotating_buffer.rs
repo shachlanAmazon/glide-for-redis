@@ -1,24 +1,89 @@
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use integer_encoding::VarInt;
 use logger_core::log_error;
 use protobuf::Message;
-use std::io;
+use std::{cell::RefCell, io, mem, rc::Rc};
+
+type Pool = Rc<RefCell<Vec<BytesMut>>>;
+
+struct RecycleableBuffer {
+    pool: Pool,
+    buffer: BytesMut,
+}
+
+impl Drop for RecycleableBuffer {
+    fn drop(&mut self) {
+        self.pool.borrow_mut().push(mem::take(&mut self.buffer));
+    }
+}
 
 /// An object handling a arranging read buffers, and parsing the data in the buffers into requests.
 pub(super) struct RotatingBuffer {
-    backing_buffer: BytesMut,
+    /// Object pool for the internal buffers.
+    pool: Pool,
+    /// Buffer for next read request.
+    current_read_buffer: RecycleableBuffer,
+    buffer_size: usize,
+}
+
+fn draw_from_pool(pool: Pool, buffer_size: usize) -> RecycleableBuffer {
+    let buffer = {
+        let mut pool_ref = RefCell::borrow_mut(&pool);
+        pool_ref
+            .pop()
+            .unwrap_or_else(|| BytesMut::with_capacity(buffer_size))
+    };
+    RecycleableBuffer { buffer, pool }
 }
 
 impl RotatingBuffer {
-    pub(super) fn new(buffer_size: usize) -> Self {
+    pub(super) fn new(initial_buffers: usize, buffer_size: usize) -> Self {
+        let pool = (0..initial_buffers)
+            .into_iter()
+            .map(|_| BytesMut::with_capacity(buffer_size))
+            .collect();
+        let pool = Rc::new(RefCell::new(pool));
+        let current_read_buffer = draw_from_pool(pool.clone(), buffer_size);
         Self {
-            backing_buffer: BytesMut::with_capacity(buffer_size),
+            current_read_buffer,
+            buffer_size,
+            pool,
         }
+    }
+
+    /// Adjusts the current buffer size so that it will fit required_length.
+    fn match_capacity(&mut self, required_length: usize) {
+        let extra_capacity = required_length - self.current_read_buffer.buffer.len();
+        self.current_read_buffer.buffer.reserve(extra_capacity);
+    }
+
+    /// Replace the buffer, and copy the ending of the current incomplete message to the beginning of the next buffer.
+    fn copy_from_old_buffer(
+        &mut self,
+        old_buffer: Bytes,
+        required_length: Option<usize>,
+        cursor: usize,
+    ) {
+        self.match_capacity(
+            required_length.unwrap_or_else(|| self.current_read_buffer.buffer.capacity()),
+        );
+        let slice = &old_buffer[cursor..];
+        debug_assert!(self.current_read_buffer.buffer.len() == 0);
+        self.current_read_buffer.buffer.extend_from_slice(slice);
+    }
+
+    fn get_new_buffer(&mut self) -> RecycleableBuffer {
+        let mut buffer = draw_from_pool(self.pool.clone(), self.buffer_size);
+        buffer.buffer.clear();
+        buffer
     }
 
     /// Parses the requests in the buffer.
     pub(super) fn get_requests<T: Message>(&mut self) -> io::Result<Vec<T>> {
-        let buffer = self.backing_buffer.split().freeze();
+        // We replace the buffer on every call, because we want to prevent the next read from affecting existing results.
+        let new_buffer = self.get_new_buffer();
+        let mut backing_buffer = mem::replace(&mut self.current_read_buffer, new_buffer);
+        let buffer = backing_buffer.buffer.split().freeze();
         let mut results: Vec<T> = vec![];
         let mut prev_position = 0;
         let buffer_len = buffer.len();
@@ -47,14 +112,15 @@ impl RotatingBuffer {
         }
 
         if prev_position != buffer.len() {
-            self.backing_buffer
-                .extend_from_slice(&buffer[prev_position..]);
+            self.copy_from_old_buffer(buffer, None, prev_position);
+        } else {
+            self.current_read_buffer.buffer.clear();
         }
         Ok(results)
     }
 
     pub(super) fn current_buffer(&mut self) -> &mut BytesMut {
-        &mut self.backing_buffer
+        &mut self.current_read_buffer.buffer
     }
 }
 
@@ -171,7 +237,7 @@ mod tests {
 
     #[rstest]
     fn get_right_sized_buffer() {
-        let mut rotating_buffer = RotatingBuffer::new(128);
+        let mut rotating_buffer = RotatingBuffer::new(1, 128);
         assert_eq!(rotating_buffer.current_buffer().capacity(), 128);
         assert_eq!(rotating_buffer.current_buffer().len(), 0);
     }
@@ -179,7 +245,7 @@ mod tests {
     #[rstest]
     fn get_requests(#[values(false, true)] args_pointer: bool) {
         const BUFFER_SIZE: usize = 50;
-        let mut rotating_buffer = RotatingBuffer::new(BUFFER_SIZE);
+        let mut rotating_buffer = RotatingBuffer::new(1, BUFFER_SIZE);
         write_get(rotating_buffer.current_buffer(), 100, "key", args_pointer);
         write_set(
             rotating_buffer.current_buffer(),
@@ -209,7 +275,7 @@ mod tests {
     #[rstest]
     fn repeating_requests_from_same_buffer(#[values(false, true)] args_pointer: bool) {
         const BUFFER_SIZE: usize = 50;
-        let mut rotating_buffer = RotatingBuffer::new(BUFFER_SIZE);
+        let mut rotating_buffer = RotatingBuffer::new(1, BUFFER_SIZE);
         write_get(rotating_buffer.current_buffer(), 100, "key", args_pointer);
         let requests = rotating_buffer.get_requests().unwrap();
         assert_request(
@@ -240,7 +306,7 @@ mod tests {
     #[rstest]
     fn next_write_doesnt_affect_values() {
         const BUFFER_SIZE: u32 = 16;
-        let mut rotating_buffer = RotatingBuffer::new(BUFFER_SIZE as usize);
+        let mut rotating_buffer = RotatingBuffer::new(1, BUFFER_SIZE as usize);
         write_get(rotating_buffer.current_buffer(), 100, "key", false);
 
         let requests = rotating_buffer.get_requests().unwrap();
@@ -253,8 +319,8 @@ mod tests {
             false,
         );
 
-        while rotating_buffer.backing_buffer.len() < rotating_buffer.backing_buffer.capacity() {
-            rotating_buffer.backing_buffer.put_u8(0_u8);
+        while rotating_buffer.current_buffer().len() < rotating_buffer.current_buffer().capacity() {
+            rotating_buffer.current_buffer().put_u8(0_u8);
         }
         assert_request(
             &requests[0],
@@ -270,7 +336,7 @@ mod tests {
         #[values(false, true)] args_pointer: bool,
     ) {
         const NUM_OF_MESSAGE_BYTES: usize = 2;
-        let mut rotating_buffer = RotatingBuffer::new(24);
+        let mut rotating_buffer = RotatingBuffer::new(1, 24);
         write_get(rotating_buffer.current_buffer(), 100, "key1", args_pointer);
 
         let mut second_request_bytes = BytesMut::new();
@@ -304,7 +370,7 @@ mod tests {
     fn copy_partial_length_to_buffer(#[values(false, true)] args_pointer: bool) {
         const NUM_OF_LENGTH_BYTES: usize = 1;
         const KEY_LENGTH: usize = 10000;
-        let mut rotating_buffer = RotatingBuffer::new(24);
+        let mut rotating_buffer = RotatingBuffer::new(1, 24);
         let buffer = rotating_buffer.current_buffer();
         let key = generate_random_string(KEY_LENGTH);
         let mut request_bytes = BytesMut::new();
@@ -334,7 +400,7 @@ mod tests {
     ) {
         const NUM_OF_LENGTH_BYTES: usize = 1;
         const KEY_LENGTH: usize = 10000;
-        let mut rotating_buffer = RotatingBuffer::new(24);
+        let mut rotating_buffer = RotatingBuffer::new(1, 24);
         let key2 = generate_random_string(KEY_LENGTH);
         let required_varint_length = u32::required_space(KEY_LENGTH as u32);
         assert!(required_varint_length > 1); // so we could split the write of the varint

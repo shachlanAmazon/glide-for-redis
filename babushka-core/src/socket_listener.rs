@@ -81,7 +81,7 @@ impl UnixStreamListener {
     fn new(read_socket: Rc<UnixStream>) -> Self {
         // if the logger has been initialized by the user (external or internal) on info level this log will be shown
         log_debug("connection", "new socket listener initiated");
-        let rotating_buffer = RotatingBuffer::new(65_536);
+        let rotating_buffer = RotatingBuffer::new(2, 65_536);
         Self {
             read_socket,
             rotating_buffer,
