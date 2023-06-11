@@ -10,7 +10,7 @@ pub(super) struct RetryStrategy {
 }
 
 impl RetryStrategy {
-    pub(super) fn new(data: &Option<Box<ConnectionRetryStrategy>>) -> Self {
+    pub(super) fn new(data: &Option<ConnectionRetryStrategy>) -> Self {
         match data {
             Some(ref strategy) => get_exponential_backoff(
                 strategy.exponent_base,

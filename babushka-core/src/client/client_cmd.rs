@@ -1,4 +1,4 @@
-use crate::connection_request::{ConnectionRequest, TlsMode};
+use crate::connection_request::ConnectionRequest;
 use crate::retry_strategies::RetryStrategy;
 use redis::RedisResult;
 
@@ -15,14 +15,14 @@ impl ClientCMD {
     pub async fn create_client(connection_request: ConnectionRequest) -> RedisResult<Self> {
         let primary_address = connection_request.addresses.first().unwrap();
 
-        let retry_strategy = RetryStrategy::new(&connection_request.connection_retry_strategy.0);
+        let retry_strategy = RetryStrategy::new(&connection_request.connection_retry_strategy);
+        let tls_mode = connection_request.tls_mode();
         let redis_connection_info =
-            get_redis_connection_info(connection_request.authentication_info.0);
+            get_redis_connection_info(connection_request.authentication_info);
 
-        let tls_mode = connection_request.tls_mode.enum_value_or(TlsMode::NoTls);
         let primary = ReconnectingConnection::new(
             primary_address,
-            retry_strategy.clone(),
+            retry_strategy,
             redis_connection_info,
             tls_mode,
         )

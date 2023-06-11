@@ -93,11 +93,11 @@ fn connection_manager_benchmark(c: &mut Criterion, address: ConnectionAddr, grou
 }
 
 fn create_connection_request(address: ConnectionAddr) -> ConnectionRequest {
-    let mut request = ConnectionRequest::new();
+    let mut request = ConnectionRequest::default();
     match address {
         ConnectionAddr::Tcp(host, port) => {
             request.tls_mode = TlsMode::NoTls.into();
-            let mut address_info = AddressInfo::new();
+            let mut address_info = AddressInfo::default();
             address_info.host = host;
             address_info.port = port as u32;
             request.addresses.push(address_info);
@@ -112,7 +112,7 @@ fn create_connection_request(address: ConnectionAddr) -> ConnectionRequest {
             } else {
                 TlsMode::SecureTls.into()
             };
-            let mut address_info = AddressInfo::new();
+            let mut address_info = AddressInfo::default();
             address_info.host = host;
             address_info.port = port as u32;
             request.addresses.push(address_info);

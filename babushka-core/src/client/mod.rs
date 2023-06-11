@@ -34,12 +34,12 @@ pub(super) fn string_to_option(str: String) -> Option<String> {
     if str.is_empty() {
         None
     } else {
-        Some(str)
+        Some(str.to_string())
     }
 }
 
 pub(super) fn get_redis_connection_info(
-    authentication_info: Option<Box<AuthenticationInfo>>,
+    authentication_info: Option<AuthenticationInfo>,
 ) -> redis::RedisConnectionInfo {
     match authentication_info {
         Some(info) => redis::RedisConnectionInfo {
@@ -58,12 +58,12 @@ pub(super) fn get_connection_info(
 ) -> redis::ConnectionInfo {
     let addr = if tls_mode != TlsMode::NoTls {
         redis::ConnectionAddr::TcpTls {
-            host: address.host.clone(),
+            host: address.host.to_string(),
             port: get_port(address),
             insecure: tls_mode == TlsMode::InsecureTls,
         }
     } else {
-        redis::ConnectionAddr::Tcp(address.host.clone(), get_port(address))
+        redis::ConnectionAddr::Tcp(address.host.to_string(), get_port(address))
     };
     redis::ConnectionInfo {
         addr,
@@ -152,8 +152,8 @@ async fn create_cluster_client(
     request: ConnectionRequest,
 ) -> RedisResult<redis::cluster_async::ClusterConnection> {
     // TODO - implement timeout for each connection attempt
-    let tls_mode = request.tls_mode.enum_value_or(TlsMode::NoTls);
-    let redis_connection_info = get_redis_connection_info(request.authentication_info.0);
+    let tls_mode = request.tls_mode();
+    let redis_connection_info = get_redis_connection_info(request.authentication_info);
     let initial_nodes = request
         .addresses
         .into_iter()

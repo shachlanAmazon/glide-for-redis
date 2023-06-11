@@ -10,7 +10,7 @@ use crate::retry_strategies::get_fixed_interval_backoff;
 use dispose::{Disposable, Dispose};
 use futures::stream::StreamExt;
 use logger_core::{log_debug, log_error, log_info, log_trace};
-use protobuf::Message;
+use prost::Message;
 use redis::RedisError;
 use redis::{cmd, Cmd, Value};
 use signal_hook::consts::signal::*;
@@ -81,14 +81,16 @@ impl UnixStreamListener {
     fn new(read_socket: Rc<UnixStream>) -> Self {
         // if the logger has been initialized by the user (external or internal) on info level this log will be shown
         log_debug("connection", "new socket listener initiated");
-        let rotating_buffer = RotatingBuffer::new(2, 65_536);
+        let rotating_buffer = RotatingBuffer::new(65_536);
         Self {
             read_socket,
             rotating_buffer,
         }
     }
 
-    pub(crate) async fn next_values<TRequest: Message>(&mut self) -> PipeListeningResult<TRequest> {
+    pub(crate) async fn next_values<TRequest: Message + Default>(
+        &mut self,
+    ) -> PipeListeningResult<TRequest> {
         loop {
             if let Err(err) = self.read_socket.readable().await {
                 return ClosingReason::UnhandledError(err.into()).into();
@@ -160,9 +162,11 @@ async fn write_closing_error(
     callback_index: u32,
     writer: &Rc<Writer>,
 ) -> Result<(), io::Error> {
-    let mut response = Response::new();
-    response.callback_idx = callback_index;
-    response.value = Some(response::response::Value::ClosingError(err.to_string()));
+    let response = Response {
+        callback_idx: callback_index,
+        value: Some(response::response::Value::ClosingError(err.to_string())),
+    };
+
     write_to_writer(response, writer).await
 }
 
@@ -172,11 +176,9 @@ async fn write_result(
     callback_index: u32,
     writer: &Rc<Writer>,
 ) -> Result<(), io::Error> {
-    let mut response = Response::new();
-    response.callback_idx = callback_index;
-    response.value = match resp_result {
+    let value = match resp_result {
         Ok(Value::Okay) => Some(response::response::Value::ConstantResponse(
-            response::ConstantResponse::OK.into(),
+            response::ConstantResponse::Ok.into(),
         )),
         Ok(value) => {
             if value != Value::Nil {
@@ -207,12 +209,16 @@ async fn write_result(
             }
         }
     };
+    let response = Response {
+        callback_idx: callback_index,
+        value,
+    };
     write_to_writer(response, writer).await
 }
 
 async fn write_to_writer(response: Response, writer: &Rc<Writer>) -> Result<(), io::Error> {
     let mut vec = writer.accumulated_outputs.take();
-    let encode_result = response.write_length_delimited_to_vec(&mut vec);
+    let encode_result = response.encode_length_delimited(&mut vec);
 
     // Write the response' length to the buffer
     match encode_result {
@@ -233,10 +239,7 @@ async fn write_to_writer(response: Response, writer: &Rc<Writer>) -> Result<(), 
 }
 
 fn get_command(request: &Command) -> Option<Cmd> {
-    let request_enum = request
-        .request_type
-        .enum_value_or(RequestType::InvalidRequest);
-    match request_enum {
+    match request.request_type() {
         RequestType::CustomCommand => Some(Cmd::new()),
         RequestType::GetString => Some(cmd("GET")),
         RequestType::SetString => Some(cmd("SET")),
@@ -248,20 +251,26 @@ fn get_redis_command(command: &Command) -> Result<Cmd, ClienUsageError> {
     let Some(mut cmd) = get_command(command) else {
         return Err(ClienUsageError::InternalError(format!("Received invalid request type: {:?}", command.request_type)));
     };
-    let res;
-    let args = match &command.args {
-        Some(command::Args::ArgsArray(args_vec)) => Ok(&args_vec.args),
-        Some(command::Args::ArgsVecPointer(pointer)) => {
-            res = *unsafe { Box::from_raw(*pointer as *mut Vec<String>) };
-            Ok(&res)
+
+    match &command.args {
+        Some(command::Args::ArgsArray(args_vec)) => {
+            for arg in args_vec.args.iter() {
+                cmd.arg(arg.as_bytes());
+            }
         }
-        None => Err(ClienUsageError::InternalError(
-            "Failed to get request arguemnts, no arguments are set".to_string(),
-        )),
-    }?;
-    for arg in args.iter() {
-        cmd.arg(arg);
-    }
+        Some(command::Args::ArgsVecPointer(pointer)) => {
+            let res = *unsafe { Box::from_raw(*pointer as *mut Vec<String>) };
+            for arg in res {
+                cmd.arg(arg.as_bytes());
+            }
+        }
+        None => {
+            return Err(ClienUsageError::InternalError(
+                "Failed to get request arguemnts, no arguments are set".to_string(),
+            ));
+        }
+    };
+
     Ok(cmd)
 }
 

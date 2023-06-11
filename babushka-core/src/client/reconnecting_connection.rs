@@ -115,7 +115,7 @@ impl ReconnectingConnection {
     ) -> RedisResult<Self> {
         log_debug(
             "connection creation",
-            format!("Attempting connection to {address}"),
+            format!("Attempting connection to {address:?}"),
         );
 
         let client = ConnectionBackend {
@@ -126,7 +126,7 @@ impl ReconnectingConnection {
         let connection = try_create_connection(client, connection_retry_strategy).await?;
         log_debug(
             "connection creation",
-            format!("Connection to {address} created"),
+            format!("Connection to {address:?} created"),
         );
         Ok(connection)
     }

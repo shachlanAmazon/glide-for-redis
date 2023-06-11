@@ -378,23 +378,22 @@ where
 }
 
 pub fn get_address_info(address: &ConnectionAddr) -> AddressInfo {
-    let mut address_info = AddressInfo::new();
     match address {
-        ConnectionAddr::Tcp(host, port) => {
-            address_info.host = host.clone();
-            address_info.port = *port as u32;
-        }
+        ConnectionAddr::Tcp(host, port) => AddressInfo {
+            host: host.clone(),
+            port: *port as u32,
+        },
+
         ConnectionAddr::TcpTls {
             host,
             port,
             insecure: _,
-        } => {
-            address_info.host = host.clone();
-            address_info.port = *port as u32;
-        }
+        } => AddressInfo {
+            host: host.clone(),
+            port: *port as u32,
+        },
         ConnectionAddr::Unix(_) => unreachable!("Unix connection not tested"),
     }
-    address_info
 }
 
 pub fn generate_random_string(length: usize) -> String {
@@ -436,12 +435,11 @@ fn set_connection_info_to_connection_request(
     connection_request: &mut connection_request::ConnectionRequest,
 ) {
     if connection_info.password.is_some() {
-        connection_request.authentication_info =
-            protobuf::MessageField(Some(Box::new(AuthenticationInfo {
-                password: connection_info.password.unwrap(),
-                username: connection_info.username.unwrap_or_default(),
-                ..Default::default()
-            })));
+        connection_request.authentication_info = Some(AuthenticationInfo {
+            password: connection_info.password.unwrap(),
+            username: connection_info.username.unwrap_or_default(),
+            ..Default::default()
+        });
     }
 }
 
@@ -479,7 +477,7 @@ pub fn create_connection_request(
     configuration: &TestConfiguration,
 ) -> connection_request::ConnectionRequest {
     let addresses_info = addresses.iter().map(get_address_info).collect();
-    let mut connection_request = connection_request::ConnectionRequest::new();
+    let mut connection_request = connection_request::ConnectionRequest::default();
     connection_request.addresses = addresses_info;
     connection_request.tls_mode = if configuration.use_tls {
         connection_request::TlsMode::InsecureTls
@@ -520,8 +518,7 @@ pub async fn setup_test_basics_internal(configuration: &TestConfiguration) -> Te
     }
     let mut connection_request =
         create_connection_request(&[server.get_client_addr()], configuration);
-    connection_request.connection_retry_strategy =
-        protobuf::MessageField::from_option(configuration.connection_retry_strategy.clone());
+    connection_request.connection_retry_strategy = configuration.connection_retry_strategy.clone();
     connection_request.cluster_mode_enabled = false;
     let client = ClientCMD::create_client(connection_request).await.unwrap();
     TestBasics { server, client }
