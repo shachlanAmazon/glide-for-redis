@@ -1,4 +1,3 @@
-use bytes::BytesMut;
 use integer_encoding::VarInt;
 use logger_core::log_error;
 use prost::Message;
@@ -6,19 +5,19 @@ use std::io;
 
 /// An object handling a arranging read buffers, and parsing the data in the buffers into requests.
 pub struct RotatingBuffer {
-    backing_buffer: BytesMut,
+    backing_buffer: Vec<u8>,
 }
 
 impl RotatingBuffer {
     pub fn new(buffer_size: usize) -> Self {
         Self {
-            backing_buffer: BytesMut::with_capacity(buffer_size),
+            backing_buffer: Vec::with_capacity(buffer_size),
         }
     }
 
     /// Parses the requests in the buffer.
     pub fn get_requests<T: Message + Default>(&mut self) -> io::Result<Vec<T>> {
-        let buffer = self.backing_buffer.split().freeze();
+        let buffer = &self.backing_buffer;
         let mut results: Vec<T> = vec![];
         let mut prev_position = 0;
         let buffer_len = buffer.len();
@@ -45,13 +44,14 @@ impl RotatingBuffer {
         }
 
         if prev_position != buffer.len() {
-            self.backing_buffer
-                .extend_from_slice(&buffer[prev_position..]);
+            self.backing_buffer.drain(..prev_position);
+        } else {
+            self.backing_buffer.clear();
         }
         Ok(results)
     }
 
-    pub fn current_buffer(&mut self) -> &mut BytesMut {
+    pub fn current_buffer(&mut self) -> &mut Vec<u8> {
         &mut self.backing_buffer
     }
 }
@@ -66,7 +66,7 @@ mod tests {
     use rand::{distributions::Alphanumeric, Rng};
     use rstest::rstest;
 
-    fn write_length(buffer: &mut BytesMut, length: u32) {
+    fn write_length(buffer: &mut Vec<u8>, length: u32) {
         let required_space = u32::required_space(length);
         let new_len = buffer.len() + required_space;
         buffer.resize(new_len, 0_u8);
@@ -100,7 +100,7 @@ mod tests {
     }
 
     fn write_message(
-        buffer: &mut BytesMut,
+        buffer: &mut Vec<u8>,
         callback_index: u32,
         args: Vec<String>,
         request_type: RequestType,
@@ -113,7 +113,7 @@ mod tests {
         // let _res = buffer.write_all(&request.encode().unwrap());
     }
 
-    fn write_get(buffer: &mut BytesMut, callback_index: u32, key: &str, args_pointer: bool) {
+    fn write_get(buffer: &mut Vec<u8>, callback_index: u32, key: &str, args_pointer: bool) {
         write_message(
             buffer,
             callback_index,
@@ -124,7 +124,7 @@ mod tests {
     }
 
     fn write_set(
-        buffer: &mut BytesMut,
+        buffer: &mut Vec<u8>,
         callback_index: u32,
         key: &str,
         value: String,
@@ -279,7 +279,7 @@ mod tests {
         let mut rotating_buffer = RotatingBuffer::new(24);
         write_get(rotating_buffer.current_buffer(), 100, "key1", args_pointer);
 
-        let mut second_request_bytes = BytesMut::new();
+        let mut second_request_bytes = Vec::new();
         write_get(&mut second_request_bytes, 101, "key2", args_pointer);
         let buffer = rotating_buffer.current_buffer();
         buffer.extend_from_slice(&second_request_bytes[..NUM_OF_MESSAGE_BYTES]);
@@ -313,7 +313,7 @@ mod tests {
         let mut rotating_buffer = RotatingBuffer::new(24);
         let buffer = rotating_buffer.current_buffer();
         let key = generate_random_string(KEY_LENGTH);
-        let mut request_bytes = BytesMut::new();
+        let mut request_bytes = Vec::new();
         write_get(&mut request_bytes, 100, key.as_str(), args_pointer);
 
         let required_varint_length = u32::required_space(KEY_LENGTH as u32);
@@ -345,7 +345,7 @@ mod tests {
         let required_varint_length = u32::required_space(KEY_LENGTH as u32);
         assert!(required_varint_length > 1); // so we could split the write of the varint
         write_get(rotating_buffer.current_buffer(), 100, "key1", args_pointer);
-        let mut request_bytes = BytesMut::new();
+        let mut request_bytes = Vec::new();
         write_get(&mut request_bytes, 101, key2.as_str(), args_pointer);
 
         let buffer = rotating_buffer.current_buffer();
