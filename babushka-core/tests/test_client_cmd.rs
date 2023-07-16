@@ -30,13 +30,18 @@ mod client_cmd_tests {
                     get_command
                         .arg("GET")
                         .arg("test_report_disconnect_and_reconnect_after_temporary_disconnect");
-                    let error = client.send_packed_command(&get_command).await;
+                    let error = client
+                        .send_packed_command(get_command.pack_command_to_bytes())
+                        .await;
                     assert!(error.is_err(), "{error:?}",);
 
                     server_available_event.wait().await;
                     let get_result = repeat_try_create(|| async {
                         let mut client = client.clone();
-                        client.send_packed_command(&get_command).await.ok()
+                        client
+                            .send_packed_command(get_command.pack_command_to_bytes())
+                            .await
+                            .ok()
                     })
                     .await;
                     assert_eq!(get_result, Value::Nil);
@@ -85,7 +90,7 @@ mod client_cmd_tests {
                 .arg("test_detect_disconnect_and_reconnect_using_heartbeat");
             let get_result = test_basics
                 .client
-                .send_packed_command(&get_command)
+                .send_packed_command(get_command.pack_command_to_bytes())
                 .await
                 .unwrap();
             assert_eq!(get_result, Value::Nil);

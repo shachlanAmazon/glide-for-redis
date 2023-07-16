@@ -216,7 +216,8 @@ async fn single_benchmark_task(
     number_of_concurrent_tasks: usize,
     data_size: usize,
 ) -> HashMap<ChosenAction, Vec<Duration>> {
-    let mut buffer = itoa::Buffer::new();
+    let mut buffer1 = itoa::Buffer::new();
+    let mut buffer2 = itoa::Buffer::new();
     let mut stopwatch = Stopwatch::new();
     let mut results = HashMap::new();
     results.insert(
@@ -239,7 +240,8 @@ async fn single_benchmark_task(
         let index = current_op % connections.len();
         let mut connection = connections[index].clone();
         stopwatch.restart();
-        let action = perform_operation(&mut connection, &mut buffer, data_size).await;
+        let action =
+            perform_operation(&mut connection, &mut buffer1, Some(&mut buffer2), data_size).await;
         stopwatch.stop();
         results.get_mut(&action).unwrap().push(stopwatch.elapsed());
     }
@@ -247,26 +249,47 @@ async fn single_benchmark_task(
 
 async fn perform_operation(
     connection: &mut impl ConnectionLike,
-    buffer: &mut itoa::Buffer,
+    buffer1: &mut itoa::Buffer,
+    buffer2: Option<&mut itoa::Buffer>,
     data_size: usize,
 ) -> ChosenAction {
-    let mut cmd = redis::Cmd::new();
+    let cmd;
     let action = if rand::thread_rng().gen_bool(PROB_GET) {
         if rand::thread_rng().gen_bool(PROB_GET_EXISTING_KEY) {
-            cmd.arg("GET")
-                .arg(buffer.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)));
+            cmd = redis::pack_command_to_bytes(
+                vec![
+                    "GET",
+                    buffer1.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)),
+                ]
+                .iter(),
+                buffer2,
+            );
             ChosenAction::GetExisting
         } else {
-            cmd.arg("GET")
-                .arg(buffer.format(thread_rng().gen_range(SIZE_SET_KEYSPACE..SIZE_GET_KEYSPACE)));
+            cmd = redis::pack_command_to_bytes(
+                vec![
+                    "GET",
+                    buffer1.format(thread_rng().gen_range(SIZE_SET_KEYSPACE..SIZE_GET_KEYSPACE)),
+                ]
+                .iter(),
+                buffer2,
+            );
+
             ChosenAction::GetNonExisting
         }
     } else {
-        cmd.arg("SET")
-            .arg(buffer.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)))
-            .arg(generate_random_string(data_size));
+        let str = generate_random_string(data_size);
+        cmd = redis::pack_command_to_bytes(
+            vec![
+                "SET",
+                buffer1.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)),
+                str.as_str(),
+            ]
+            .iter(),
+            buffer2,
+        );
         ChosenAction::Set
     };
-    connection.req_packed_command(&cmd).await.unwrap();
+    connection.req_packed_command(cmd).await.unwrap();
     action
 }

@@ -15,6 +15,11 @@ async fn run_get(mut connection: impl BabushkaClient) -> RedisResult<Value> {
     connection.get("foo").await
 }
 
+async fn run_get_bytes(mut connection: impl BabushkaClient) -> Value {
+    let bytes = redis::pack_command_to_bytes(vec!["GET", "BAR"].iter(), None);
+    connection.req_packed_command(bytes).await.unwrap()
+}
+
 fn benchmark_single_get(
     c: &mut Criterion,
     connection_id: &str,
@@ -26,6 +31,21 @@ fn benchmark_single_get(
     group.significance_level(0.1).sample_size(500);
     group.bench_function(format!("{connection_id}-single get"), move |b| {
         b.to_async(runtime).iter(|| run_get(connection.clone()));
+    });
+}
+
+fn benchmark_single_get_bytes(
+    c: &mut Criterion,
+    connection_id: &str,
+    test_group: &str,
+    connection: impl BabushkaClient,
+    runtime: &Runtime,
+) {
+    let mut group = c.benchmark_group(test_group);
+    group.significance_level(0.1).sample_size(500);
+    group.bench_function(format!("{connection_id}-single get bytes"), move |b| {
+        b.to_async(runtime)
+            .iter(|| run_get_bytes(connection.clone()));
     });
 }
 
@@ -50,6 +70,27 @@ fn benchmark_concurrent_gets(
     });
 }
 
+fn benchmark_concurrent_gets_bytes(
+    c: &mut Criterion,
+    connection_id: &str,
+    test_group: &str,
+    connection: impl BabushkaClient,
+    runtime: &Runtime,
+) {
+    const ITERATIONS: usize = 100;
+    let mut group = c.benchmark_group(test_group);
+    group.significance_level(0.1).sample_size(150);
+    group.bench_function(format!("{connection_id}-concurrent gets bytes"), move |b| {
+        b.to_async(runtime).iter(|| {
+            let mut actions = Vec::with_capacity(ITERATIONS);
+            for _ in 0..ITERATIONS {
+                actions.push(run_get_bytes(connection.clone()));
+            }
+            join_all(actions)
+        });
+    });
+}
+
 fn benchmark<Fun, Con>(
     c: &mut Criterion,
     address: ConnectionAddr,
@@ -63,7 +104,9 @@ fn benchmark<Fun, Con>(
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     let connection = connection_creation(address, &runtime);
     benchmark_single_get(c, connection_id, group, connection.clone(), &runtime);
-    benchmark_concurrent_gets(c, connection_id, group, connection, &runtime);
+    benchmark_concurrent_gets(c, connection_id, group, connection.clone(), &runtime);
+    benchmark_single_get_bytes(c, connection_id, group, connection.clone(), &runtime);
+    benchmark_concurrent_gets_bytes(c, connection_id, group, connection, &runtime);
 }
 
 fn get_connection_info(address: ConnectionAddr) -> redis::ConnectionInfo {

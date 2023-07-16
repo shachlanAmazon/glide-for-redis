@@ -1,9 +1,10 @@
 use super::client::BabushkaClient;
 use super::rotating_buffer::RotatingBuffer;
 use crate::client::Client;
+use crate::command_args::command_args;
 use crate::connection_request::ConnectionRequest;
-use crate::redis_request::{command, redis_request};
-use crate::redis_request::{Command, RedisRequest, RequestType, Transaction};
+use crate::redis_request::redis_request;
+use crate::redis_request::{RedisRequest, Transaction};
 use crate::response;
 use crate::response::Response;
 use crate::retry_strategies::get_fixed_interval_backoff;
@@ -13,10 +14,10 @@ use futures::stream::StreamExt;
 use logger_core::{log_debug, log_error, log_info, log_trace};
 use protobuf::Message;
 use redis::RedisError;
-use redis::{cmd, Cmd, Value};
+use redis::Value;
 use signal_hook::consts::signal::*;
 use signal_hook_tokio::Signals;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::{env, str};
 use std::{io, thread};
@@ -65,6 +66,7 @@ struct Writer {
     lock: Mutex<()>,
     accumulated_outputs: Cell<Vec<u8>>,
     closing_sender: Sender<ClosingReason>,
+    num_to_string: RefCell<itoa::Buffer>,
 }
 
 enum PipeListeningResult<TRequest: Message> {
@@ -244,52 +246,12 @@ async fn write_to_writer(response: Response, writer: &Rc<Writer>) -> Result<(), 
     }
 }
 
-fn get_command(request: &Command) -> Option<Cmd> {
-    let request_enum = request
-        .request_type
-        .enum_value_or(RequestType::InvalidRequest);
-    match request_enum {
-        RequestType::CustomCommand => Some(Cmd::new()),
-        RequestType::GetString => Some(cmd("GET")),
-        RequestType::SetString => Some(cmd("SET")),
-        _ => None,
-    }
-}
-
-fn get_redis_command(command: &Command) -> Result<Cmd, ClienUsageError> {
-    let Some(mut cmd) = get_command(command) else {
-        return Err(ClienUsageError::InternalError(format!("Received invalid request type: {:?}", command.request_type)));
-    };
-
-    match &command.args {
-        Some(command::Args::ArgsArray(args_vec)) => {
-            for arg in args_vec.args.iter() {
-                cmd.arg(arg.as_bytes());
-            }
-        }
-        Some(command::Args::ArgsVecPointer(pointer)) => {
-            let res = *unsafe { Box::from_raw(*pointer as *mut Vec<String>) };
-            for arg in res {
-                cmd.arg(arg.as_bytes());
-            }
-        }
-        None => {
-            return Err(ClienUsageError::InternalError(
-                "Failed to get request arguemnts, no arguments are set".to_string(),
-            ));
-        }
-    };
-
-    Ok(cmd)
-}
-
 async fn send_command(
-    request: Command,
+    bytes: bytes::Bytes,
     mut connection: impl BabushkaClient + 'static,
 ) -> ClientUsageResult<Value> {
-    let cmd = get_redis_command(&request)?;
-
-    cmd.query_async(&mut connection)
+    connection
+        .req_packed_command(bytes)
         .await
         .map_err(|err| err.into())
 }
@@ -298,16 +260,26 @@ async fn send_transaction(
     request: Transaction,
     mut connection: impl BabushkaClient + 'static,
 ) -> ClientUsageResult<Value> {
-    let mut pipeline = redis::Pipeline::with_capacity(request.commands.capacity());
-    pipeline.atomic();
+    let command_count = request.commands.len();
+    let mut commands = Vec::with_capacity(command_count);
     for command in request.commands {
-        pipeline.add_command(get_redis_command(&command)?);
+        commands.push(command_args(command)?);
     }
+    let args_lengths_iter = commands.iter().map(|args| redis::args_len(args.iter()));
+    let capacity = redis::packed_pipeline_length(args_lengths_iter, true);
+    let mut bytes = bytes::BytesMut::with_capacity(capacity);
 
-    pipeline
-        .query_async(&mut connection)
-        .await
-        .map_err(|err| err.into())
+    let mut num_to_string = ::itoa::Buffer::new(); // TODO share this instead of allocating a new one.
+    bytes.extend_from_slice(redis::MULTI_COMMAND);
+    for args in commands {
+        redis::pack_command_to_preallocated_bytes(args.iter(), &mut bytes, &mut num_to_string);
+    }
+    bytes.extend_from_slice(redis::EXEC_COMMAND);
+
+    let mut resp = connection
+        .req_packed_commands(bytes.freeze(), 0, command_count + 2)
+        .await?;
+    Ok(resp.pop().unwrap_or(Value::Nil))
 }
 
 fn handle_request(
@@ -318,9 +290,16 @@ fn handle_request(
     task::spawn_local(async move {
         let result = match request.command {
             Some(action) => match action {
-                redis_request::Command::SingleCommand(command) => {
-                    send_command(command, connection).await
-                }
+                redis_request::Command::SingleCommand(command) => match command_args(command) {
+                    Ok(args) => {
+                        let bytes = {
+                            let mut num_to_string = writer.num_to_string.borrow_mut();
+                            redis::pack_command_to_bytes(args.iter(), Some(&mut num_to_string))
+                        };
+                        send_command(bytes, connection).await
+                    }
+                    Err(err) => Err(err),
+                },
                 redis_request::Command::Transaction(transaction) => {
                     send_transaction(transaction, connection).await
                 }
@@ -408,6 +387,7 @@ async fn listen_on_client_stream(socket: UnixStream) {
         lock: write_lock,
         accumulated_outputs,
         closing_sender: sender,
+        num_to_string: RefCell::new(itoa::Buffer::new()),
     });
     let connection_creation =
         wait_for_connection_configuration_and_create_connection(&mut client_listener, &writer);
@@ -590,7 +570,7 @@ enum ClientCreationError {
 
 /// Enum describing errors received during client usage.
 #[derive(Debug, Error)]
-enum ClienUsageError {
+pub enum ClienUsageError {
     #[error("Redis error: {0}")]
     RedisError(#[from] RedisError),
     /// An error that stems from wrong behavior of the client.
@@ -598,7 +578,7 @@ enum ClienUsageError {
     InternalError(String),
 }
 
-type ClientUsageResult<T> = Result<T, ClienUsageError>;
+pub type ClientUsageResult<T> = Result<T, ClienUsageError>;
 
 /// Defines errors caused the connection to close.
 #[derive(Debug, Clone)]

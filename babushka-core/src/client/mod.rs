@@ -97,10 +97,7 @@ async fn run_with_timeout<T>(
 }
 
 impl ConnectionLike for Client {
-    fn req_packed_command<'a>(
-        &'a mut self,
-        cmd: &'a redis::Cmd,
-    ) -> redis::RedisFuture<'a, redis::Value> {
+    fn req_packed_command(&mut self, cmd: bytes::Bytes) -> redis::RedisFuture<redis::Value> {
         run_with_timeout(self.response_timeout, async {
             match self.internal_client {
                 ClientWrapper::CMD(ref mut client) => client.send_packed_command(cmd).await,
@@ -111,12 +108,12 @@ impl ConnectionLike for Client {
         .boxed()
     }
 
-    fn req_packed_commands<'a>(
-        &'a mut self,
-        cmd: &'a redis::Pipeline,
+    fn req_packed_commands(
+        &mut self,
+        cmd: bytes::Bytes,
         offset: usize,
         count: usize,
-    ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
+    ) -> redis::RedisFuture<Vec<redis::Value>> {
         (async move {
             match self.internal_client {
                 ClientWrapper::CMD(ref mut client) => {

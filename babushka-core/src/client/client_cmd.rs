@@ -47,7 +47,7 @@ impl ClientCMD {
 
     pub async fn send_packed_command(
         &mut self,
-        cmd: &redis::Cmd,
+        cmd: bytes::Bytes,
     ) -> redis::RedisResult<redis::Value> {
         log_trace("ClientCMD", "sending command");
         let mut connection = self.inner.primary.get_connection().await?;
@@ -63,7 +63,7 @@ impl ClientCMD {
 
     pub async fn send_packed_commands(
         &mut self,
-        cmd: &redis::Pipeline,
+        cmd: bytes::Bytes,
         offset: usize,
         count: usize,
     ) -> redis::RedisResult<Vec<redis::Value>> {
@@ -105,7 +105,7 @@ impl ClientCMD {
                 };
                 log_debug("ClientCMD", "performing heartbeat");
                 if connection
-                    .send_packed_command(&redis::cmd("PING"))
+                    .send_packed_command(redis::cmd("PING").pack_command_to_bytes())
                     .await
                     .is_err_and(|err| err.is_connection_dropped() || err.is_connection_refusal())
                 {

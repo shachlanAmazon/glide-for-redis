@@ -360,7 +360,7 @@ pub async fn wait_for_server_to_become_ready(server_address: &ConnectionAddr) {
                 }
             }
             Ok(mut con) => {
-                while con.send_packed_command(&redis::cmd("PING")).await.is_err() {
+                while con.req_command(&redis::cmd("PING")).await.is_err() {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
                 let _: RedisResult<()> = redis::cmd("FLUSHDB").query_async(&mut con).await;
@@ -415,7 +415,7 @@ pub fn generate_random_string(length: usize) -> String {
 pub async fn send_get(client: &mut impl ConnectionLike, key: &str) -> RedisResult<Value> {
     let mut get_command = redis::Cmd::new();
     get_command.arg("GET").arg(key);
-    client.req_packed_command(&get_command).await
+    client.req_command(&get_command).await
 }
 
 pub async fn send_set_and_get(mut client: impl ConnectionLike, key: String) {
@@ -424,10 +424,10 @@ pub async fn send_set_and_get(mut client: impl ConnectionLike, key: String) {
 
     let mut set_command = redis::Cmd::new();
     set_command.arg("SET").arg(key.as_str()).arg(value.clone());
-    let set_result = client.req_packed_command(&set_command).await.unwrap();
+    let set_result = client.req_command(&set_command).await.unwrap();
     let mut get_command = redis::Cmd::new();
     get_command.arg("GET").arg(key);
-    let get_result = client.req_packed_command(&get_command).await.unwrap();
+    let get_result = client.req_command(&get_command).await.unwrap();
 
     assert_eq!(set_result, Value::Okay);
     assert_eq!(get_result, Value::Data(value.into_bytes()));
@@ -486,7 +486,7 @@ pub async fn setup_acl(addr: &ConnectionAddr, connection_info: &RedisConnectionI
         .arg("allkeys")
         .arg("+@all")
         .arg(format!(">{password}"));
-    connection.req_packed_command(&cmd).await.unwrap();
+    connection.req_command(&cmd).await.unwrap();
 }
 
 #[derive(Eq, PartialEq, Default)]
