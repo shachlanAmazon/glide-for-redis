@@ -94,3 +94,37 @@ pub fn command_args(command: Command) -> ClientUsageResult<CommandArgs> {
         other_args,
     })
 }
+
+impl redis::cluster_routing::Routable for CommandArgs {
+    fn arg_idx(&self, idx: usize) -> Option<&[u8]> {
+        if idx == 0 {
+            if let Some(command_name) = self.command_name {
+                return Some(command_name.as_bytes());
+            }
+        }
+        let index = if self.command_name.is_some() {
+            idx - 1
+        } else {
+            idx
+        };
+        self.other_args.get(index).map(|char| char.as_bytes())
+    }
+
+    fn position(&self, candidate: &[u8]) -> Option<usize> {
+        if let Some(command_name) = self.command_name {
+            if command_name.as_bytes() == candidate {
+                return Some(0);
+            }
+        }
+        self.other_args
+            .iter()
+            .position(|arg| arg.as_bytes() == candidate)
+            .map(|position| {
+                if self.command_name.is_some() {
+                    position + 1
+                } else {
+                    position
+                }
+            })
+    }
+}
