@@ -1,3 +1,5 @@
+use std::iter::FusedIterator;
+
 use protobuf::Chars;
 
 use crate::{
@@ -61,6 +63,11 @@ impl<'a> Iterator for ArgsIter<'a> {
 
         return Some(self.command_args.other_args[index - 1].as_bytes());
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let length = self.len();
+        (length, Some(length))
+    }
 }
 
 fn args_vec(command: Command) -> ClientUsageResult<Vec<Chars>> {
@@ -76,6 +83,7 @@ fn args_vec(command: Command) -> ClientUsageResult<Vec<Chars>> {
         )),
     }
 }
+
 impl CommandArgs {
     pub fn iter(&self) -> ArgsIter {
         ArgsIter {
@@ -94,6 +102,8 @@ pub fn command_args(command: Command) -> ClientUsageResult<CommandArgs> {
         other_args,
     })
 }
+
+impl<'a> FusedIterator for ArgsIter<'a> {}
 
 impl redis::cluster_routing::Routable for CommandArgs {
     fn arg_idx(&self, idx: usize) -> Option<&[u8]> {
