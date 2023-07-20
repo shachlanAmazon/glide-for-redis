@@ -1,12 +1,10 @@
+use std::sync::Arc;
+
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use protobuf::Chars;
 use redis::Cmd;
 
-fn benchmark_internal<R: std::ops::Deref<Target = [u8]>>(
-    c: &mut Criterion,
-    test_group: &str,
-    func: impl Fn(usize) -> R,
-) {
+fn benchmark_internal<R>(c: &mut Criterion, test_group: &str, func: impl Fn(usize) -> R) {
     let mut group = c.benchmark_group(test_group);
     group.significance_level(0.01).sample_size(5000);
     group.bench_function("bench", move |b| b.iter(|| black_box(func(black_box(100)))));
