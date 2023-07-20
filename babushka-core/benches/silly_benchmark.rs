@@ -89,6 +89,18 @@ fn benchmark_vec_with_array_of_str(c: &mut Criterion) {
     });
 }
 
+fn benchmark_arc_vec_with_array_of_str(c: &mut Criterion) {
+    benchmark_internal(c, "benchmark_vec_with_array_of_str", |length| {
+        let str = string_of_length(length);
+        Arc::new(redis::pack_command(&[
+            "GET",
+            "SET",
+            "YOU BET",
+            str.as_str(),
+        ]))
+    });
+}
+
 fn benchmark_vec_with_array_of_chars(c: &mut Criterion) {
     benchmark_internal(c, "benchmark_vec_with_array_of_chars", |length| {
         let str = string_of_length(length);
@@ -117,6 +129,21 @@ fn benchmark_new_vec_with_command_args_no_name(c: &mut Criterion) {
     });
 }
 
+fn benchmark_arc_vec_with_command_args_no_name(c: &mut Criterion) {
+    benchmark_internal(c, "benchmark_new_Vec_with_command_args_no_name", |length| {
+        let str = string_of_length(length);
+        let other_args = ["GET", "SET", "YOU BET", str.as_str()]
+            .into_iter()
+            .map(|str| str.into())
+            .collect();
+        let args = babushka::command_args::CommandArgs {
+            other_args,
+            command_name: None,
+        };
+        Arc::new(redis::pack_command_to_vec(args.iter(), None))
+    });
+}
+
 fn benchmark_new_vec_with_command_args_with_name(c: &mut Criterion) {
     benchmark_internal(
         c,
@@ -132,6 +159,25 @@ fn benchmark_new_vec_with_command_args_with_name(c: &mut Criterion) {
                 command_name: Some("GET"),
             };
             redis::pack_command_to_vec(args.iter(), None)
+        },
+    );
+}
+
+fn benchmark_arc_vec_with_command_args_with_name(c: &mut Criterion) {
+    benchmark_internal(
+        c,
+        "benchmark_new_vec_with_command_args_with_name",
+        |length| {
+            let str = string_of_length(length);
+            let other_args = ["SET", "YOU BET", str.as_str()]
+                .into_iter()
+                .map(|str| str.into())
+                .collect();
+            let args = babushka::command_args::CommandArgs {
+                other_args,
+                command_name: Some("GET"),
+            };
+            Arc::new(redis::pack_command_to_vec(args.iter(), None))
         },
     );
 }

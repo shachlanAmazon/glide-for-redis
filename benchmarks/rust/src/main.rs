@@ -256,7 +256,7 @@ async fn perform_operation(
     let cmd;
     let action = if rand::thread_rng().gen_bool(PROB_GET) {
         if rand::thread_rng().gen_bool(PROB_GET_EXISTING_KEY) {
-            cmd = redis::pack_command_to_bytes(
+            cmd = redis::pack_command_to_vec(
                 [
                     "GET",
                     buffer1.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)),
@@ -266,7 +266,7 @@ async fn perform_operation(
             );
             ChosenAction::GetExisting
         } else {
-            cmd = redis::pack_command_to_bytes(
+            cmd = redis::pack_command_to_vec(
                 [
                     "GET",
                     buffer1.format(thread_rng().gen_range(SIZE_SET_KEYSPACE..SIZE_GET_KEYSPACE)),
@@ -279,7 +279,7 @@ async fn perform_operation(
         }
     } else {
         let str = generate_random_string(data_size);
-        cmd = redis::pack_command_to_bytes(
+        cmd = redis::pack_command_to_vec(
             [
                 "SET",
                 buffer1.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)),
@@ -290,6 +290,6 @@ async fn perform_operation(
         );
         ChosenAction::Set
     };
-    connection.req_packed_command(cmd).await.unwrap();
+    connection.req_packed_command(Arc::new(cmd)).await.unwrap();
     action
 }
