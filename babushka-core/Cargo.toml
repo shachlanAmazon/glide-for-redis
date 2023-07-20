@@ -42,14 +42,7 @@ iai-callgrind = "0.3.1"
 [build-dependencies]
 protobuf-codegen = "3"
 
-[[bench]]
-name = "rotating_buffer_benchmark"
-harness = false
 
 [[bench]]
-name = "connections_benchmark"
-harness = false
-
-[[bench]]
-name = "memory_benchmark"
+name = "silly_benchmark"
 harness = false

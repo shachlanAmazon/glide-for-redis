@@ -23,8 +23,8 @@ fn command_name(command: &Command) -> Result<Option<&'static str>, ClienUsageErr
 }
 
 pub struct CommandArgs {
-    command_name: Option<&'static str>,
-    other_args: Vec<Chars>,
+    pub command_name: Option<&'static str>,
+    pub other_args: Vec<Chars>,
 }
 
 #[derive(Clone)]

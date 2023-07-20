@@ -7,6 +7,7 @@ use redis::{
     RedisResult,
 };
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 mod client_cmd;
 mod reconnecting_connection;
@@ -97,7 +98,7 @@ async fn run_with_timeout<T>(
 }
 
 impl ConnectionLike for Client {
-    fn req_packed_command(&mut self, cmd: bytes::Bytes) -> redis::RedisFuture<redis::Value> {
+    fn req_packed_command(&mut self, cmd: Arc<Vec<u8>>) -> redis::RedisFuture<redis::Value> {
         run_with_timeout(self.response_timeout, async {
             match self.internal_client {
                 ClientWrapper::CMD(ref mut client) => client.send_packed_command(cmd).await,
@@ -110,7 +111,7 @@ impl ConnectionLike for Client {
 
     fn req_packed_commands(
         &mut self,
-        cmd: bytes::Bytes,
+        cmd: Arc<Vec<u8>>,
         offset: usize,
         count: usize,
     ) -> redis::RedisFuture<Vec<redis::Value>> {

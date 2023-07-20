@@ -19,6 +19,7 @@ use signal_hook::consts::signal::*;
 use signal_hook_tokio::Signals;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::{env, str};
 use std::{io, thread};
 use thiserror::Error;
@@ -247,7 +248,7 @@ async fn write_to_writer(response: Response, writer: &Rc<Writer>) -> Result<(), 
 }
 
 async fn send_command(
-    bytes: bytes::Bytes,
+    bytes: Arc<Vec<u8>>,
     mut connection: impl BabushkaClient + 'static,
 ) -> ClientUsageResult<Value> {
     connection
@@ -267,17 +268,17 @@ async fn send_transaction(
     }
     let args_lengths_iter = commands.iter().map(|args| redis::args_len(args.iter()));
     let capacity = redis::packed_pipeline_length(args_lengths_iter, true);
-    let mut bytes = bytes::BytesMut::with_capacity(capacity);
+    let mut bytes = Vec::with_capacity(capacity);
 
     let mut num_to_string = ::itoa::Buffer::new(); // TODO share this instead of allocating a new one.
-    bytes.extend_from_slice(redis::MULTI_COMMAND);
-    for args in commands {
-        redis::pack_command_to_preallocated_bytes(args.iter(), &mut bytes, &mut num_to_string);
-    }
-    bytes.extend_from_slice(redis::EXEC_COMMAND);
+                                                   // bytes.extend_from_slice(redis::MULTI_COMMAND);
+                                                   // for args in commands {
+                                                   //     redis::pack(args.iter(), &mut bytes, &mut num_to_string);
+                                                   // }
+                                                   // bytes.extend_from_slice(redis::EXEC_COMMAND);
 
     let mut resp = connection
-        .req_packed_commands(bytes.freeze(), 0, command_count + 2)
+        .req_packed_commands(Arc::new(bytes), 0, command_count + 2)
         .await?;
     Ok(resp.pop().unwrap_or(Value::Nil))
 }
@@ -294,9 +295,9 @@ fn handle_request(
                     Ok(args) => {
                         let bytes = {
                             let mut num_to_string = writer.num_to_string.borrow_mut();
-                            redis::pack_command_to_bytes(args.iter(), Some(&mut num_to_string))
+                            redis::pack_command_to_vec(args.iter(), Some(&mut num_to_string))
                         };
-                        send_command(bytes, connection).await
+                        send_command(Arc::new(bytes), connection).await
                     }
                     Err(err) => Err(err),
                 },
