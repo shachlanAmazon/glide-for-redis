@@ -3,11 +3,11 @@ use crate::client::Client;
 use crate::connection_request::connection_request::ConnectionRequest;
 use crate::redis_request::redis_request::{
     ArgsOptions, Command, CommandOptions, RedisRequest, RequestType, Routes, SimpleRoutes,
-    SlotTypes, Transaction,
+    SlotTypes,
 };
 use crate::response::response;
 use crate::response::response::{
-    ConstantResponse, ConstantResponseTableBuilder, PointerBuilder, RequestErrorBuilder, Response,
+    ConstantResponse, ConstantResponseTableBuilder, PointerBuilder, RequestErrorBuilder,
     ResponseBuilder, StringTable,
 };
 use crate::retry_strategies::get_fixed_interval_backoff;
@@ -489,10 +489,10 @@ fn handle_request(request: RedisRequest, client: Client, writer: Rc<Writer>) {
                                 let _res = write_result(result, callback_idx, &writer).await;
                             });
                         }
-                        Err(e) => {} //TODO
+                        Err(_e) => {} //TODO
                     };
                 }
-                Err(e) => {} //TODO
+                Err(_e) => {} //TODO
             }
         }
         CommandOptions::Transaction => {
@@ -510,7 +510,7 @@ fn handle_request(request: RedisRequest, client: Client, writer: Rc<Writer>) {
                         let _res = write_result(result, callback_idx, &writer).await;
                     });
                 }
-                Err(e) => {} //TODO
+                Err(_e) => {} //TODO
             }
         }
         _ => panic!("unknown enum"), // TODO
@@ -550,8 +550,7 @@ async fn wait_for_connection_configuration_and_create_client(
                 match flatbuffers::root::<ConnectionRequest>(&request) {
                     Ok(connection_request) => create_client(writer, connection_request).await,
                     Err(err) => Err(ClientCreationError::UnhandledError(format!(
-                        "Couldn't parse connection request: `{}`",
-                        err.to_string()
+                        "Couldn't parse connection request: `{err}`"
                     ))),
                 }
             } else {

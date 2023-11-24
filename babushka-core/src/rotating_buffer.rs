@@ -156,7 +156,7 @@ mod tests {
         let Some(command) = request.command_as_command() else {
             panic!("expected single command");
         };
-        assert_eq!(command.request_type(), expected_type.into());
+        assert_eq!(command.request_type(), expected_type);
         let args: Vec<String> = if args_pointer {
             *unsafe {
                 Box::from_raw(

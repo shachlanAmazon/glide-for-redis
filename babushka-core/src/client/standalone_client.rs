@@ -62,6 +62,7 @@ impl std::fmt::Debug for StandaloneClientConnectionError {
 }
 
 impl StandaloneClient {
+    #[allow(clippy::needless_lifetimes)]
     pub async fn create_client<'a>(
         connection_request: ConnectionRequest<'a>,
     ) -> Result<Self, StandaloneClientConnectionError> {
@@ -86,7 +87,7 @@ impl StandaloneClient {
                     get_connection_and_replication_info(
                         host,
                         port,
-                        &retry_strategy,
+                        retry_strategy,
                         redis_connection_info,
                         tls_mode,
                     )
