@@ -1,17 +1,22 @@
 use super::rotating_buffer::RotatingBuffer;
 use crate::client::Client;
-use crate::connection_request::ConnectionRequest;
-use crate::redis_request::{command, redis_request};
-use crate::redis_request::{Command, RedisRequest, RequestType, Transaction};
-use crate::redis_request::{Routes, SlotTypes};
-use crate::response;
-use crate::response::Response;
+use crate::connection_request::connection_request::ConnectionRequest;
+use crate::redis_request::redis_request::{
+    ArgsOptions, Command, CommandOptions, RedisRequest, RequestType, Routes, SimpleRoutes,
+    SlotTypes, Transaction,
+};
+use crate::response::response;
+use crate::response::response::{
+    ConstantResponse, ConstantResponseTableBuilder, PointerBuilder, RequestErrorBuilder, Response,
+    ResponseBuilder, StringTable,
+};
 use crate::retry_strategies::get_fixed_interval_backoff;
+use bytes::Bytes;
 use directories::BaseDirs;
 use dispose::{Disposable, Dispose};
+use flatbuffers::FlatBufferBuilder;
 use futures::stream::StreamExt;
 use logger_core::{log_debug, log_error, log_info, log_trace, log_warn};
-use protobuf::Message;
 use redis::cluster_routing::{
     MultipleNodeRoutingInfo, Route, RoutingInfo, SingleNodeRoutingInfo, SlotAddr,
 };
@@ -52,7 +57,7 @@ struct SocketListener {
 impl Dispose for SocketListener {
     fn dispose(self) {
         if self.cleanup_socket {
-            close_socket(&self.socket_path);
+            // close_socket(&self.socket_path);
         }
     }
 }
@@ -71,12 +76,12 @@ struct Writer {
     closing_sender: Sender<ClosingReason>,
 }
 
-enum PipeListeningResult<TRequest: Message> {
+enum PipeListeningResult {
     Closed(ClosingReason),
-    ReceivedValues(Vec<TRequest>),
+    ReceivedValues(()),
 }
 
-impl<T: Message> From<ClosingReason> for PipeListeningResult<T> {
+impl From<ClosingReason> for PipeListeningResult {
     fn from(result: ClosingReason) -> Self {
         Closed(result)
     }
@@ -93,7 +98,7 @@ impl UnixStreamListener {
         }
     }
 
-    pub(crate) async fn next_values<TRequest: Message>(&mut self) -> PipeListeningResult<TRequest> {
+    pub(crate) async fn next_values(&mut self, func: impl FnMut(Bytes)) -> PipeListeningResult {
         loop {
             if let Err(err) = self.read_socket.readable().await {
                 return ClosingReason::UnhandledError(err.into()).into();
@@ -107,10 +112,8 @@ impl UnixStreamListener {
                     return ReadSocketClosed.into();
                 }
                 Ok(_) => {
-                    return match self.rotating_buffer.get_requests() {
-                        Ok(requests) => ReceivedValues(requests),
-                        Err(err) => UnhandledError(err.into()).into(),
-                    };
+                    self.rotating_buffer.get_requests(func);
+                    return ReceivedValues(());
                 }
                 Err(ref e)
                     if e.kind() == io::ErrorKind::WouldBlock
@@ -160,6 +163,16 @@ async fn write_to_output(writer: &Rc<Writer>) {
     }
 }
 
+fn write_closing_error_to_builder<'a>(
+    builder: &mut FlatBufferBuilder<'a>,
+    error: String,
+) -> flatbuffers::WIPOffset<StringTable<'a>> {
+    let string_offset = builder.create_string(error.as_str());
+    let mut message_builder = response::StringTableBuilder::new(builder);
+    message_builder.add_string(string_offset);
+    message_builder.finish()
+}
+
 async fn write_closing_error(
     err: ClosingError,
     callback_index: u32,
@@ -167,10 +180,19 @@ async fn write_closing_error(
 ) -> Result<(), io::Error> {
     let err = err.err_message;
     log_error("client creation", err.as_str());
-    let mut response = Response::new();
-    response.callback_idx = callback_index;
-    response.value = Some(response::response::Value::ClosingError(err.into()));
-    write_to_writer(response, writer).await
+    let vec = writer.accumulated_outputs.take();
+    let mut builder = FlatBufferBuilder::from_vec(vec);
+    let offset = write_closing_error_to_builder(&mut builder, err.to_string());
+    let mut response_builder = ResponseBuilder::new(&mut builder);
+    response_builder.add_callback_idx(callback_index);
+    response_builder.add_value(offset.as_union_value());
+    let offset = response_builder.finish();
+    builder.finish_minimal(offset);
+    let (vec, _size) = builder.collapse();
+    assert_eq!(vec.len(), _size);
+    writer.accumulated_outputs.set(vec);
+    write_to_output(writer).await;
+    Ok(())
 }
 
 /// Create response and write it to the writer
@@ -179,85 +201,88 @@ async fn write_result(
     callback_index: u32,
     writer: &Rc<Writer>,
 ) -> Result<(), io::Error> {
-    let mut response = Response::new();
-    response.callback_idx = callback_index;
-    response.value = match resp_result {
-        Ok(Value::Okay) => Some(response::response::Value::ConstantResponse(
-            response::ConstantResponse::OK.into(),
-        )),
+    let vec = writer.accumulated_outputs.take();
+    let mut builder = FlatBufferBuilder::from_vec(vec);
+
+    let offset = match resp_result {
+        Ok(Value::Okay) => {
+            let mut constant_value_builder = ConstantResponseTableBuilder::new(&mut builder);
+            constant_value_builder.add_response(ConstantResponse::OK);
+            constant_value_builder.finish().as_union_value()
+        }
         Ok(value) => {
-            if value != Value::Nil {
+            let pointer = if value != Value::Nil {
                 // Since null values don't require any additional data, they can be sent without any extra effort.
                 // Move the value to the heap and leak it. The wrapper should use `Box::from_raw` to recreate the box, use the value, and drop the allocation.
-                let pointer = Box::leak(Box::new(value));
-                let raw_pointer = pointer as *mut redis::Value;
-                Some(response::response::Value::RespPointer(raw_pointer as u64))
+                Box::leak(Box::new(value)) as *mut redis::Value as u64
             } else {
-                None
-            }
+                0
+            };
+            let mut pointer_builder = PointerBuilder::new(&mut builder);
+            pointer_builder.add_pointer(pointer);
+            pointer_builder.finish().as_union_value()
         }
         Err(ClienUsageError::InternalError(error_message)) => {
-            log_error("internal error", &error_message);
-            Some(response::response::Value::ClosingError(
-                error_message.into(),
-            ))
+            write_closing_error_to_builder(&mut builder, error_message).as_union_value()
         }
         Err(ClienUsageError::RedisError(err)) => {
             let error_message = err.to_string();
             if err.is_connection_refusal() {
                 log_error("response error", &error_message);
-                Some(response::response::Value::ClosingError(
-                    error_message.into(),
-                ))
+                write_closing_error_to_builder(&mut builder, error_message).as_union_value()
             } else {
                 log_warn("received error", error_message.as_str());
-                let mut request_error = response::RequestError::default();
-                if err.is_connection_dropped() {
-                    request_error.type_ = response::RequestErrorType::Disconnect.into();
-                    request_error.message = format!(
-                        "Received connection error `{error_message}`. Will attempt to reconnect"
-                    )
-                    .into();
+                let message_offset = builder.create_string(error_message.as_str());
+                let mut request_error_builder = RequestErrorBuilder::new(&mut builder);
+                request_error_builder.add_message(message_offset);
+                request_error_builder.add_type_(if err.is_connection_dropped() {
+                    response::RequestErrorType::Disconnect
                 } else if err.is_timeout() {
-                    request_error.type_ = response::RequestErrorType::Timeout.into();
-                    request_error.message = error_message.into();
+                    response::RequestErrorType::Timeout
                 } else {
-                    request_error.type_ = match err.kind() {
-                        redis::ErrorKind::ExecAbortError => {
-                            response::RequestErrorType::ExecAbort.into()
-                        }
-                        _ => response::RequestErrorType::Unspecified.into(),
-                    };
-                    request_error.message = error_message.into();
-                }
-                Some(response::response::Value::RequestError(request_error))
+                    match err.kind() {
+                        redis::ErrorKind::ExecAbortError => response::RequestErrorType::ExecAbort,
+                        _ => response::RequestErrorType::Unspecified,
+                    }
+                });
+                request_error_builder.finish().as_union_value()
             }
         }
     };
-    write_to_writer(response, writer).await
+
+    let mut response_builder = ResponseBuilder::new(&mut builder);
+    response_builder.add_value(offset);
+    response_builder.add_callback_idx(callback_index);
+    response_builder.finish();
+    builder.finish_minimal(offset);
+    let (vec, _size) = builder.collapse();
+    assert_eq!(vec.len(), _size);
+    writer.accumulated_outputs.set(vec);
+    write_to_output(writer).await;
+    Ok(())
 }
 
-async fn write_to_writer(response: Response, writer: &Rc<Writer>) -> Result<(), io::Error> {
-    let mut vec = writer.accumulated_outputs.take();
-    let encode_result = response.write_length_delimited_to_vec(&mut vec);
+// async fn write_to_writer(response: Response, writer: &Rc<Writer>) -> Result<(), io::Error> {
+//     let mut vec = writer.accumulated_outputs.take();
+//     let encode_result = response.write_length_delimited_to_vec(&mut vec);
 
-    // Write the response' length to the buffer
-    match encode_result {
-        Ok(_) => {
-            writer.accumulated_outputs.set(vec);
-            write_to_output(writer).await;
-            Ok(())
-        }
-        Err(err) => {
-            let err_message = format!("failed to encode response: {err}");
-            log_error("response error", err_message.clone());
-            Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                err_message,
-            ))
-        }
-    }
-}
+//     // Write the response' length to the buffer
+//     match encode_result {
+//         Ok(_) => {
+//             writer.accumulated_outputs.set(vec);
+//             write_to_output(writer).await;
+//             Ok(())
+//         }
+//         Err(err) => {
+//             let err_message = format!("failed to encode response: {err}");
+//             log_error("response error", err_message.clone());
+//             Err(std::io::Error::new(
+//                 std::io::ErrorKind::InvalidInput,
+//                 err_message,
+//             ))
+//         }
+//     }
+// }
 
 fn get_two_word_command(first: &str, second: &str) -> Cmd {
     let mut cmd = cmd(first);
@@ -266,9 +291,7 @@ fn get_two_word_command(first: &str, second: &str) -> Cmd {
 }
 
 fn get_command(request: &Command) -> Option<Cmd> {
-    let request_enum = request
-        .request_type
-        .enum_value_or(RequestType::InvalidRequest);
+    let request_enum = request.request_type();
     match request_enum {
         RequestType::InvalidRequest => None,
         RequestType::CustomCommand => Some(Cmd::new()),
@@ -331,6 +354,7 @@ fn get_command(request: &Command) -> Option<Cmd> {
         RequestType::Exists => Some(cmd("EXISTS")),
         RequestType::Unlink => Some(cmd("UNLINK")),
         RequestType::TTL => Some(cmd("TTL")),
+        _ => panic!("unknown enum"), // TODO
     }
 }
 
@@ -338,27 +362,30 @@ fn get_redis_command(command: &Command) -> Result<Cmd, ClienUsageError> {
     let Some(mut cmd) = get_command(command) else {
         return Err(ClienUsageError::InternalError(format!(
             "Received invalid request type: {:?}",
-            command.request_type
+            command.request_type()
         )));
     };
 
-    match &command.args {
-        Some(command::Args::ArgsArray(args_vec)) => {
-            for arg in args_vec.args.iter() {
+    match command.args_type() {
+        ArgsOptions::ArgsArray => {
+            let args_array = command.args_as_args_array().unwrap().args();
+            for arg in args_array.iter() {
                 cmd.arg(arg.as_bytes());
             }
         }
-        Some(command::Args::ArgsVecPointer(pointer)) => {
-            let res = *unsafe { Box::from_raw(*pointer as *mut Vec<String>) };
+        ArgsOptions::ArgsVecPointer => {
+            let pointer = command.args_as_args_vec_pointer().unwrap().pointer();
+            let res = *unsafe { Box::from_raw(pointer as *mut Vec<String>) };
             for arg in res {
                 cmd.arg(arg.as_bytes());
             }
         }
-        None => {
+        ArgsOptions::NONE => {
             return Err(ClienUsageError::InternalError(
                 "Failed to get request arguemnts, no arguments are set".to_string(),
             ));
         }
+        _ => panic!("unknown enum"), // TODO
     };
 
     Ok(cmd)
@@ -376,16 +403,12 @@ async fn send_command(
 }
 
 async fn send_transaction(
-    request: Transaction,
+    mut pipeline: redis::Pipeline,
     mut client: Client,
     routing: Option<RoutingInfo>,
 ) -> ClientUsageResult<Value> {
-    let mut pipeline = redis::Pipeline::with_capacity(request.commands.capacity());
-    let offset = request.commands.len() + 1;
+    let offset = pipeline.cmd_iter().count();
     pipeline.atomic();
-    for command in request.commands {
-        pipeline.add_command(get_redis_command(&command)?);
-    }
 
     client
         .req_packed_commands(&pipeline, offset, 1, routing)
@@ -394,106 +417,104 @@ async fn send_transaction(
         .map_err(|err| err.into())
 }
 
-fn get_slot_addr(slot_type: &protobuf::EnumOrUnknown<SlotTypes>) -> ClientUsageResult<SlotAddr> {
-    slot_type
-        .enum_value()
-        .map(|slot_type| match slot_type {
-            SlotTypes::Primary => SlotAddr::Master,
-            SlotTypes::Replica => SlotAddr::ReplicaRequired,
-        })
-        .map_err(|id| {
-            ClienUsageError::InternalError(format!("Received unexpected slot id type {id}"))
-        })
+fn get_slot_addr(slot_type: SlotTypes) -> ClientUsageResult<SlotAddr> {
+    match slot_type {
+        SlotTypes::Primary => Ok(SlotAddr::Master),
+        SlotTypes::Replica => Ok(SlotAddr::ReplicaRequired),
+        // id => ClienUsageError::InternalError(format!("Received unexpected slot id type {id}")),
+        _ => panic!("unknown enum"), // TODO
+    }
 }
 
 fn get_route(
-    route: Option<Box<Routes>>,
+    request: &RedisRequest,
     response_policy: Option<ResponsePolicy>,
 ) -> ClientUsageResult<Option<RoutingInfo>> {
-    use crate::redis_request::routes::Value;
-    let Some(route) = route.and_then(|route| route.value) else {
-        return Ok(None);
-    };
-    match route {
-        Value::SimpleRoutes(simple_route) => {
-            let simple_route = simple_route.enum_value().map_err(|id| {
-                ClienUsageError::InternalError(format!(
-                    "Received unexpected simple route type {id}"
-                ))
-            })?;
+    match request.route_type() {
+        Routes::SimpleRoutesTable => {
+            let simple_route = request.route_as_simple_routes_table().unwrap().route();
             match simple_route {
-                crate::redis_request::SimpleRoutes::AllNodes => Ok(Some(RoutingInfo::MultiNode((
+                SimpleRoutes::AllNodes => Ok(Some(RoutingInfo::MultiNode((
                     MultipleNodeRoutingInfo::AllNodes,
                     response_policy,
                 )))),
-                crate::redis_request::SimpleRoutes::AllPrimaries => Ok(Some(
-                    RoutingInfo::MultiNode((MultipleNodeRoutingInfo::AllMasters, response_policy)),
-                )),
-                crate::redis_request::SimpleRoutes::Random => {
+                SimpleRoutes::AllPrimaries => Ok(Some(RoutingInfo::MultiNode((
+                    MultipleNodeRoutingInfo::AllMasters,
+                    response_policy,
+                )))),
+                SimpleRoutes::Random => {
                     Ok(Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random)))
                 }
+                _ => panic!("unknown enum"), // TODO
             }
         }
-        Value::SlotKeyRoute(slot_key_route) => Ok(Some(RoutingInfo::SingleNode(
-            SingleNodeRoutingInfo::SpecificNode(Route::new(
-                redis::cluster_topology::get_slot(slot_key_route.slot_key.as_bytes()),
-                get_slot_addr(&slot_key_route.slot_type)?,
-            )),
-        ))),
-        Value::SlotIdRoute(slot_id_route) => Ok(Some(RoutingInfo::SingleNode(
-            SingleNodeRoutingInfo::SpecificNode(Route::new(
-                slot_id_route.slot_id as u16,
-                get_slot_addr(&slot_id_route.slot_type)?,
-            )),
-        ))),
+        Routes::SlotIdRoute => {
+            let slot_id_route = request.route_as_slot_id_route().unwrap();
+            Ok(Some(RoutingInfo::SingleNode(
+                SingleNodeRoutingInfo::SpecificNode(Route::new(
+                    slot_id_route.slot_id() as u16,
+                    get_slot_addr(slot_id_route.slot_type())?,
+                )),
+            )))
+        }
+        Routes::SlotKeyRoute => {
+            let slot_key_route = request.route_as_slot_key_route().unwrap();
+            Ok(Some(RoutingInfo::SingleNode(
+                SingleNodeRoutingInfo::SpecificNode(Route::new(
+                    redis::cluster_topology::get_slot(slot_key_route.slot_key().as_bytes()),
+                    get_slot_addr(slot_key_route.slot_type())?,
+                )),
+            )))
+        }
+        _ => panic!("unknown enum"), // TODO
     }
 }
 
 fn handle_request(request: RedisRequest, client: Client, writer: Rc<Writer>) {
-    task::spawn_local(async move {
-        let result = match request.command {
-            Some(action) => match action {
-                redis_request::Command::SingleCommand(command) => {
-                    match get_redis_command(&command) {
-                        Ok(cmd) => {
-                            let response_policy = cmd
-                                .command()
-                                .map(|cmd| ResponsePolicy::for_command(&cmd))
-                                .unwrap_or(None);
-                            match get_route(request.route.0, response_policy) {
-                                Ok(routes) => send_command(cmd, client, routes).await,
-                                Err(e) => Err(e),
-                            }
+    let callback_idx = request.callback_idx();
+    match request.command_type() {
+        CommandOptions::Command => {
+            let command = request.command_as_command().unwrap();
+            match get_redis_command(&command) {
+                Ok(cmd) => {
+                    let response_policy = cmd
+                        .command()
+                        .map(|cmd| ResponsePolicy::for_command(&cmd))
+                        .unwrap_or(None);
+
+                    match get_route(&request, response_policy) {
+                        Ok(routes) => {
+                            task::spawn_local(async move {
+                                let result = send_command(cmd, client, routes).await;
+                                let _res = write_result(result, callback_idx, &writer).await;
+                            });
                         }
-                        Err(e) => Err(e),
-                    }
+                        Err(e) => {} //TODO
+                    };
                 }
-                redis_request::Command::Transaction(transaction) => {
-                    match get_route(request.route.0, None) {
-                        Ok(routes) => send_transaction(transaction, client, routes).await,
-                        Err(e) => Err(e),
+                Err(e) => {} //TODO
+            }
+        }
+        CommandOptions::Transaction => {
+            let transaction = request.command_as_transaction().unwrap();
+            match get_route(&request, None) {
+                Ok(routes) => {
+                    let commands = transaction.commands();
+                    let mut pipeline = redis::Pipeline::with_capacity(commands.len());
+                    for command in commands {
+                        pipeline.add_command(get_redis_command(&command).unwrap());
+                        // TODO handle unwrap
                     }
+                    task::spawn_local(async move {
+                        let result = send_transaction(pipeline, client, routes).await;
+                        let _res = write_result(result, callback_idx, &writer).await;
+                    });
                 }
-            },
-            None => Err(ClienUsageError::InternalError(
-                "Received empty request".to_string(),
-            )),
-        };
-
-        let _res = write_result(result, request.callback_idx, &writer).await;
-    });
-}
-
-async fn handle_requests(
-    received_requests: Vec<RedisRequest>,
-    client: &Client,
-    writer: &Rc<Writer>,
-) {
-    for request in received_requests {
-        handle_request(request, client.clone(), writer.clone())
-    }
-    // Yield to ensure that the subtasks aren't starved.
-    task::yield_now().await;
+                Err(e) => {} //TODO
+            }
+        }
+        _ => panic!("unknown enum"), // TODO
+    };
 }
 
 pub fn close_socket(socket_path: &String) {
@@ -501,9 +522,9 @@ pub fn close_socket(socket_path: &String) {
     let _ = std::fs::remove_file(socket_path);
 }
 
-async fn create_client(
+async fn create_client<'a>(
     writer: &Rc<Writer>,
-    request: ConnectionRequest,
+    request: ConnectionRequest<'a>,
 ) -> Result<Client, ClientCreationError> {
     let client = match Client::new(request).await {
         Ok(client) => client,
@@ -517,12 +538,22 @@ async fn wait_for_connection_configuration_and_create_client(
     client_listener: &mut UnixStreamListener,
     writer: &Rc<Writer>,
 ) -> Result<Client, ClientCreationError> {
+    let mut connection_request_bytes: Option<Bytes> = None;
     // Wait for the server's address
-    match client_listener.next_values::<ConnectionRequest>().await {
+    match client_listener
+        .next_values(|request| connection_request_bytes = Some(request))
+        .await
+    {
         Closed(reason) => Err(ClientCreationError::SocketListenerClosed(reason)),
-        ReceivedValues(mut received_requests) => {
-            if let Some(request) = received_requests.pop() {
-                create_client(writer, request).await
+        ReceivedValues(()) => {
+            if let Some(request) = connection_request_bytes {
+                match flatbuffers::root::<ConnectionRequest>(&request) {
+                    Ok(connection_request) => create_client(writer, connection_request).await,
+                    Err(err) => Err(ClientCreationError::UnhandledError(format!(
+                        "Couldn't parse connection request: `{}`",
+                        err.to_string()
+                    ))),
+                }
             } else {
                 Err(ClientCreationError::UnhandledError(
                     "No received requests".to_string(),
@@ -538,12 +569,19 @@ async fn read_values_loop(
     writer: Rc<Writer>,
 ) -> ClosingReason {
     loop {
-        match client_listener.next_values().await {
+        match client_listener
+            .next_values(|bytes| {
+                let request = flatbuffers::root::<RedisRequest>(&bytes).unwrap();
+                handle_request(request, client.clone(), writer.clone())
+            })
+            .await
+        {
             Closed(reason) => {
                 return reason;
             }
-            ReceivedValues(received_requests) => {
-                handle_requests(received_requests, client, &writer).await;
+            ReceivedValues(()) => {
+                // Yield to ensure that the subtasks aren't starved.
+                task::yield_now().await;
             }
         }
     }
@@ -655,7 +693,7 @@ impl SocketListener {
                         return SocketCreationResult::PreExisting;
                     } else {
                         // socket file might still exist, even if nothing is listening on it.
-                        close_socket(&self.socket_path);
+                        // close_socket(&self.socket_path);
                         retries -= 1;
                         continue;
                     }

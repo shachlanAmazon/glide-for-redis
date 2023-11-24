@@ -1,4 +1,4 @@
-use crate::connection_request::{NodeAddress, TlsMode};
+use crate::connection_request::connection_request::TlsMode;
 use crate::retry_strategies::RetryStrategy;
 use futures_intrusive::sync::ManualResetEvent;
 use logger_core::{log_debug, log_trace, log_warn};
@@ -101,12 +101,14 @@ async fn create_connection(
 }
 
 fn get_client(
-    address: &NodeAddress,
+    host: String,
+    port: u32,
     tls_mode: TlsMode,
     redis_connection_info: redis::RedisConnectionInfo,
 ) -> redis::Client {
     redis::Client::open(super::get_connection_info(
-        address,
+        host,
+        port,
         tls_mode,
         redis_connection_info,
     ))
@@ -126,18 +128,19 @@ fn internal_retry_iterator() -> impl Iterator<Item = Duration> {
 }
 
 impl ReconnectingConnection {
-    pub(super) async fn new(
-        address: &NodeAddress,
+    pub(super) async fn new<'a>(
+        host: String,
+        port: u32,
         connection_retry_strategy: RetryStrategy,
         redis_connection_info: RedisConnectionInfo,
         tls_mode: TlsMode,
     ) -> Result<ReconnectingConnection, (ReconnectingConnection, RedisError)> {
         log_debug(
             "connection creation",
-            format!("Attempting connection to {address}"),
+            format!("Attempting connection to {host}:{port}"),
         );
 
-        let connection_info = get_client(address, tls_mode, redis_connection_info);
+        let connection_info = get_client(host, port, tls_mode, redis_connection_info);
         let backend = ConnectionBackend {
             connection_info,
             connection_available_signal: ManualResetEvent::new(true),

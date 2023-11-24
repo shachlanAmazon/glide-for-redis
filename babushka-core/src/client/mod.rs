@@ -1,5 +1,5 @@
-use crate::connection_request::{
-    AuthenticationInfo, ConnectionRequest, NodeAddress, ReadFrom, TlsMode,
+use crate::connection_request::connection_request::{
+    AuthenticationInfo, ConnectionRequest, ReadFrom, TlsMode,
 };
 use futures::FutureExt;
 use logger_core::log_info;
@@ -27,33 +27,34 @@ pub const DEFAULT_RESPONSE_TIMEOUT: Duration = Duration::from_millis(250);
 pub const DEFAULT_CONNECTION_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250);
 pub const INTERNAL_CONNECTION_TIMEOUT: Duration = Duration::from_millis(250);
 
-pub(super) fn get_port(address: &NodeAddress) -> u16 {
+pub(super) fn get_port(port: u32) -> u16 {
     const DEFAULT_PORT: u16 = 6379;
-    if address.port == 0 {
+    if port == 0 {
         DEFAULT_PORT
     } else {
-        address.port as u16
+        port as u16
     }
 }
 
-fn chars_to_string_option(chars: &::protobuf::Chars) -> Option<String> {
-    if chars.is_empty() {
-        None
-    } else {
-        Some(chars.to_string())
-    }
-}
+// fn chars_to_string_option(chars: &::protobuf::Chars) -> Option<String> {
+//     if chars.is_empty() {
+//         None
+//     } else {
+//         Some(chars.to_string())
+//     }
+// }
 
 pub(super) fn get_redis_connection_info(
-    authentication_info: Option<Box<AuthenticationInfo>>,
+    authentication_info: Option<AuthenticationInfo>,
     database_id: u32,
 ) -> redis::RedisConnectionInfo {
     match authentication_info {
         Some(info) => redis::RedisConnectionInfo {
             db: database_id as i64,
-            username: chars_to_string_option(&info.username),
-            password: chars_to_string_option(&info.password),
+            username: info.username().map(|str|str.to_string()),
+            password: Some(info.password().to_string()),
             use_resp3: false,
+            ..Default::default()
         },
         None => redis::RedisConnectionInfo {
             db: database_id as i64,
@@ -64,19 +65,20 @@ pub(super) fn get_redis_connection_info(
 }
 
 pub(super) fn get_connection_info(
-    address: &NodeAddress,
+    host: String,
+    port: u32,
     tls_mode: TlsMode,
     redis_connection_info: redis::RedisConnectionInfo,
 ) -> redis::ConnectionInfo {
     let addr = if tls_mode != TlsMode::NoTls {
         redis::ConnectionAddr::TcpTls {
-            host: address.host.to_string(),
-            port: get_port(address),
+            host: host,
+            port: get_port(port),
             insecure: tls_mode == TlsMode::InsecureTls,
             tls_params: None,
         }
     } else {
-        redis::ConnectionAddr::Tcp(address.host.to_string(), get_port(address))
+        redis::ConnectionAddr::Tcp(host, get_port(port))
     };
     redis::ConnectionInfo {
         addr,
@@ -165,18 +167,25 @@ fn to_duration(time_in_millis: u32, default: Duration) -> Duration {
     }
 }
 
-async fn create_cluster_client(
-    request: ConnectionRequest,
+async fn create_cluster_client<'a>(
+    request: ConnectionRequest<'a>,
 ) -> RedisResult<redis::cluster_async::ClusterConnection> {
     // TODO - implement timeout for each connection attempt
-    let tls_mode = request.tls_mode.enum_value_or_default();
-    let redis_connection_info = get_redis_connection_info(request.authentication_info.0, 0);
-    let initial_nodes: Vec<_> = request
-        .addresses
+    let tls_mode = request.tls_mode();
+    let redis_connection_info = get_redis_connection_info(request.authentication_info(), 0);
+    let initial_nodes = request
+        .addresses()
         .into_iter()
-        .map(|address| get_connection_info(&address, tls_mode, redis_connection_info.clone()))
+        .map(|address| {
+            get_connection_info(
+                address.host().to_owned(),
+                address.port(),
+                tls_mode,
+                redis_connection_info.clone(),
+            )
+        })
         .collect();
-    let read_from = request.read_from.enum_value().unwrap_or(ReadFrom::Primary);
+    let read_from = request.read_from();
     let read_from_replicas = !matches!(read_from, ReadFrom::Primary,); // TODO - implement different read from replica strategies.
     let mut builder = redis::cluster::ClusterClientBuilder::new(initial_nodes)
         .connection_timeout(INTERNAL_CONNECTION_TIMEOUT);
@@ -232,20 +241,22 @@ fn format_non_zero_value(name: &'static str, value: u32) -> String {
 
 fn sanitized_request_string(request: &ConnectionRequest) -> String {
     let addresses = request
-        .addresses
+        .addresses()
         .iter()
-        .map(|address| format!("{}:{}", address.host, address.port))
+        .map(|address| format!("{}:{}", address.host(), address.port()))
         .collect::<Vec<_>>()
         .join(", ");
-    let tls_mode = request.tls_mode.enum_value_or_default();
-    let cluster_mode = request.cluster_mode_enabled;
-    let request_timeout = format_non_zero_value("response timeout", request.request_timeout);
-    let database_id = format_non_zero_value("database ID", request.database_id);
-    let rfr_strategy = request.read_from.enum_value_or_default();
-    let connection_retry_strategy = match &request.connection_retry_strategy.0 {
+    let tls_mode = request.tls_mode();
+    let cluster_mode = request.cluster_mode_enabled();
+    let request_timeout = format_non_zero_value("response timeout", request.request_timeout());
+    let client_creation_timeout =
+        format_non_zero_value("client creation timeout", request.client_creation_timeout());
+    let database_id = format_non_zero_value("database ID", request.database_id());
+    let rfr_strategy = request.read_from();
+    let connection_retry_strategy = match &request.connection_retry_strategy() {
         Some(strategy) => {
             format!("\nreconnect backoff strategy: number of increasing duration retries: {}, base: {}, factor: {}",
-        strategy.number_of_retries, strategy.exponent_base, strategy.factor)
+        strategy.number_of_retries(), strategy.exponent_base(), strategy.factor())
         }
         None => String::new(),
     };
@@ -256,16 +267,20 @@ fn sanitized_request_string(request: &ConnectionRequest) -> String {
 }
 
 impl Client {
-    pub async fn new(request: ConnectionRequest) -> Result<Self, ConnectionError> {
+    pub async fn new<'a>(request: ConnectionRequest<'a>) -> Result<Self, ConnectionError> {
         const DEFAULT_CLIENT_CREATION_TIMEOUT: Duration = Duration::from_secs(10);
 
         log_info(
             "Connection configuration",
             sanitized_request_string(&request),
         );
-        let request_timeout = to_duration(request.request_timeout, DEFAULT_RESPONSE_TIMEOUT);
-        tokio::time::timeout(DEFAULT_CLIENT_CREATION_TIMEOUT, async move {
-            let internal_client = if request.cluster_mode_enabled {
+        let request_timeout = to_duration(request.request_timeout(), DEFAULT_RESPONSE_TIMEOUT);
+        let total_connection_timeout = to_duration(
+            request.client_creation_timeout(),
+            DEFAULT_CLIENT_CREATION_TIMEOUT,
+        );
+        tokio::time::timeout(total_connection_timeout, async move {
+            let internal_client = if request.cluster_mode_enabled() {
                 let client = create_cluster_client(request)
                     .await
                     .map_err(ConnectionError::Cluster)?;

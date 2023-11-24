@@ -1,4 +1,4 @@
-use crate::connection_request::ConnectionRetryStrategy;
+use crate::connection_request::connection_request::ConnectionRetryStrategy;
 use std::time::Duration;
 use tokio_retry::strategy::{jitter, ExponentialBackoff};
 
@@ -10,12 +10,12 @@ pub(super) struct RetryStrategy {
 }
 
 impl RetryStrategy {
-    pub(super) fn new(data: &Option<Box<ConnectionRetryStrategy>>) -> Self {
+    pub(super) fn new(data: &Option<ConnectionRetryStrategy>) -> Self {
         match data {
             Some(ref strategy) => get_exponential_backoff(
-                strategy.exponent_base,
-                strategy.factor,
-                strategy.number_of_retries,
+                strategy.exponent_base(),
+                strategy.factor(),
+                strategy.number_of_retries(),
             ),
             None => get_exponential_backoff(EXPONENT_BASE, FACTOR, NUMBER_OF_RETRIES),
         }

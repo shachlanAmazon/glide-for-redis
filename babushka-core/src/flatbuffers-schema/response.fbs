@@ -1,0 +1,41 @@
+namespace response;
+
+enum RequestErrorType : int {
+  Unspecified = 0,
+  ExecAbort = 1,
+  Timeout = 2,
+  Disconnect = 3,
+}
+
+enum ConstantResponse : int {
+  OK = 0,
+}
+
+table ConstantResponseTable {
+    response: ConstantResponse;
+}
+
+table RequestError {
+  type:RequestErrorType;
+  message:string (required);
+}
+
+table Pointer {
+    pointer: ulong;
+}
+
+table StringTable {
+    string: string;
+}
+
+union ResponseValue {
+  resp_pointer:Pointer,
+  constant_response:ConstantResponseTable,
+  request_error:RequestError,
+  closing_error:StringTable
+}
+
+table Response {
+  callback_idx:uint;
+  value:ResponseValue (required);
+}

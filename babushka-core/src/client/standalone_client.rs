@@ -1,19 +1,18 @@
 use super::get_redis_connection_info;
 use super::reconnecting_connection::ReconnectingConnection;
-use crate::connection_request::{ConnectionRequest, NodeAddress, TlsMode};
+use crate::connection_request::connection_request::{ConnectionRequest, ReadFrom, TlsMode};
 use crate::retry_strategies::RetryStrategy;
 use futures::{stream, StreamExt};
 #[cfg(standalone_heartbeat)]
 use logger_core::log_debug;
 use logger_core::{log_trace, log_warn};
-use protobuf::EnumOrUnknown;
 use redis::cluster_routing::is_readonly;
 use redis::{RedisError, RedisResult, Value};
 use std::sync::Arc;
 #[cfg(standalone_heartbeat)]
 use tokio::task;
 
-enum ReadFrom {
+enum ReadFromInternal {
     Primary,
     PreferReplica {
         latest_read_replica_index: Arc<std::sync::atomic::AtomicUsize>,
@@ -24,7 +23,7 @@ struct DropWrapper {
     /// Connection to the primary node in the client.
     primary_index: usize,
     nodes: Vec<ReconnectingConnection>,
-    read_from: ReadFrom,
+    read_from: ReadFromInternal,
 }
 
 impl Drop for DropWrapper {
@@ -63,30 +62,37 @@ impl std::fmt::Debug for StandaloneClientConnectionError {
 }
 
 impl StandaloneClient {
-    pub async fn create_client(
-        connection_request: ConnectionRequest,
+    pub async fn create_client<'a>(
+        connection_request: ConnectionRequest<'a>,
     ) -> Result<Self, StandaloneClientConnectionError> {
-        if connection_request.addresses.is_empty() {
+        if connection_request.addresses().is_empty() {
             return Err(StandaloneClientConnectionError::NoAddressesProvided);
         }
-        let retry_strategy = RetryStrategy::new(&connection_request.connection_retry_strategy.0);
+        let retry_strategy = RetryStrategy::new(&connection_request.connection_retry_strategy());
         let redis_connection_info = get_redis_connection_info(
-            connection_request.authentication_info.0,
-            connection_request.database_id,
+            connection_request.authentication_info(),
+            connection_request.database_id(),
         );
 
-        let tls_mode = connection_request.tls_mode.enum_value_or_default();
-        let node_count = connection_request.addresses.len();
-        let mut stream = stream::iter(connection_request.addresses.iter())
-            .map(|address| async {
-                get_connection_and_replication_info(
-                    address,
-                    &retry_strategy,
-                    &redis_connection_info,
-                    tls_mode,
-                )
-                .await
-                .map_err(|err| (format!("{}:{}", address.host, address.port), err))
+        let tls_mode = connection_request.tls_mode();
+        let node_count = connection_request.addresses().len();
+        let mut stream = stream::iter(connection_request.addresses().iter())
+            .map(|address| {
+                let host = address.host().to_owned();
+                let port = address.port();
+                let retry_strategy = &retry_strategy;
+                let redis_connection_info = &redis_connection_info;
+                async move {
+                    get_connection_and_replication_info(
+                        host,
+                        port,
+                        &retry_strategy,
+                        redis_connection_info,
+                        tls_mode,
+                    )
+                    .await
+                    .map_err(|err| (format!("{}:{}", address.host(), address.port()), err))
+                }
             })
             .buffer_unordered(node_count);
 
@@ -124,7 +130,7 @@ impl StandaloneClient {
                 ),
             );
         }
-        let read_from = get_read_from(&connection_request.read_from);
+        let read_from = get_read_from(connection_request.read_from());
 
         #[cfg(standalone_heartbeat)]
         for node in nodes.iter() {
@@ -149,8 +155,8 @@ impl StandaloneClient {
             return self.get_primary_connection();
         }
         match &self.inner.read_from {
-            ReadFrom::Primary => self.get_primary_connection(),
-            ReadFrom::PreferReplica {
+            ReadFromInternal::Primary => self.get_primary_connection(),
+            ReadFromInternal::PreferReplica {
                 latest_read_replica_index,
             } => {
                 let initial_index =
@@ -261,14 +267,16 @@ impl StandaloneClient {
     }
 }
 
-async fn get_connection_and_replication_info(
-    address: &NodeAddress,
+async fn get_connection_and_replication_info<'a>(
+    host: String,
+    port: u32,
     retry_strategy: &RetryStrategy,
     connection_info: &redis::RedisConnectionInfo,
     tls_mode: TlsMode,
 ) -> Result<(ReconnectingConnection, Value), (ReconnectingConnection, RedisError)> {
     let result = ReconnectingConnection::new(
-        address,
+        host,
+        port,
         retry_strategy.clone(),
         connection_info.clone(),
         tls_mode,
@@ -296,13 +304,14 @@ async fn get_connection_and_replication_info(
     }
 }
 
-fn get_read_from(read_from: &EnumOrUnknown<crate::connection_request::ReadFrom>) -> ReadFrom {
-    match read_from.enum_value_or_default() {
-        crate::connection_request::ReadFrom::Primary => ReadFrom::Primary,
-        crate::connection_request::ReadFrom::PreferReplica => ReadFrom::PreferReplica {
+fn get_read_from(read_from: ReadFrom) -> ReadFromInternal {
+    match read_from {
+        ReadFrom::Primary => ReadFromInternal::Primary,
+        ReadFrom::PreferReplica => ReadFromInternal::PreferReplica {
             latest_read_replica_index: Default::default(),
         },
-        crate::connection_request::ReadFrom::LowestLatency => todo!(),
-        crate::connection_request::ReadFrom::AZAffinity => todo!(),
+        ReadFrom::LowestLatency => todo!(),
+        ReadFrom::AZAffinity => todo!(),
+        _ => panic!("Unknown value: {read_from:?}"), // TODO - don't panic
     }
 }

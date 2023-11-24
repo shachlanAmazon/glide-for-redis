@@ -1,8 +1,5 @@
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use integer_encoding::VarInt;
-use logger_core::log_error;
-use protobuf::Message;
-use std::io;
 
 /// An object handling a arranging read buffers, and parsing the data in the buffers into requests.
 pub struct RotatingBuffer {
@@ -17,9 +14,8 @@ impl RotatingBuffer {
     }
 
     /// Parses the requests in the buffer.
-    pub fn get_requests<T: Message>(&mut self) -> io::Result<Vec<T>> {
+    pub fn get_requests(&mut self, mut func: impl FnMut(Bytes)) {
         let buffer = self.backing_buffer.split().freeze();
-        let mut results: Vec<T> = vec![];
         let mut prev_position = 0;
         let buffer_len = buffer.len();
         while prev_position < buffer_len {
@@ -28,18 +24,9 @@ impl RotatingBuffer {
                 if (start_pos + request_len as usize) > buffer_len {
                     break;
                 } else {
-                    match T::parse_from_tokio_bytes(
-                        &buffer.slice(start_pos..start_pos + request_len as usize),
-                    ) {
-                        Ok(request) => {
-                            prev_position += request_len as usize + bytes_read;
-                            results.push(request);
-                        }
-                        Err(err) => {
-                            log_error("parse input", format!("Failed to parse request: {err}"));
-                            return Err(err.into());
-                        }
-                    }
+                    let slice = buffer.slice(start_pos..start_pos + request_len as usize);
+                    prev_position += request_len as usize + bytes_read;
+                    func(slice);
                 }
             } else {
                 break;
@@ -50,7 +37,6 @@ impl RotatingBuffer {
             self.backing_buffer
                 .extend_from_slice(&buffer[prev_position..]);
         }
-        Ok(results)
     }
 
     pub fn current_buffer(&mut self) -> &mut BytesMut {
@@ -61,9 +47,12 @@ impl RotatingBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::redis_request::{command, redis_request};
-    use crate::redis_request::{Command, RedisRequest, RequestType};
+    use crate::redis_request::redis_request::{
+        ArgsArrayBuilder, ArgsOptions, ArgsVecPointerBuilder, CommandBuilder, CommandOptions,
+        RedisRequest, RedisRequestBuilder, RequestType,
+    };
     use bytes::BufMut;
+    use flatbuffers::FlatBufferBuilder;
     use rand::{distributions::Alphanumeric, Rng};
     use rstest::rstest;
 
@@ -74,27 +63,45 @@ mod tests {
         u32::encode_var(length, &mut buffer[new_len - required_space..]);
     }
 
-    fn create_command_request(
+    fn create_command_request<'a>(
         callback_index: u32,
         args: Vec<String>,
         request_type: RequestType,
         args_pointer: bool,
-    ) -> RedisRequest {
-        let mut request = RedisRequest::new();
-        request.callback_idx = callback_index;
-        let mut command = Command::new();
-        command.request_type = request_type.into();
-        if args_pointer {
-            command.args = Some(command::Args::ArgsVecPointer(Box::leak(Box::new(args))
-                as *mut Vec<String>
-                as u64));
+    ) -> FlatBufferBuilder<'a> {
+        let mut builder = FlatBufferBuilder::new();
+        let command_offset = if args_pointer {
+            let mut args_builder = ArgsVecPointerBuilder::new(&mut builder);
+            args_builder.add_pointer(Box::leak(Box::new(args)) as *mut Vec<String> as u64);
+            let offset = args_builder.finish();
+            let mut command_builder = CommandBuilder::new(&mut builder);
+            command_builder.add_args(offset.as_union_value());
+            command_builder.add_args_type(ArgsOptions::ArgsVecPointer);
+            command_builder.add_request_type(request_type);
+            command_builder.finish()
         } else {
-            let mut args_array = command::ArgsArray::new();
-            args_array.args = args.into_iter().map(|str| str.into()).collect();
-            command.args = Some(command::Args::ArgsArray(args_array));
-        }
-        request.command = Some(redis_request::Command::SingleCommand(command));
-        request
+            let pushed_args_vec: Vec<_> = args
+                .into_iter()
+                .map(|str| builder.create_string(&str))
+                .collect();
+            let offset = builder.create_vector_from_iter(pushed_args_vec.iter());
+            let mut args_builder = ArgsArrayBuilder::new(&mut builder);
+            args_builder.add_args(offset);
+            let offset = args_builder.finish();
+            let mut command_builder = CommandBuilder::new(&mut builder);
+            command_builder.add_args(offset.as_union_value());
+            command_builder.add_args_type(ArgsOptions::ArgsArray);
+            command_builder.add_request_type(request_type);
+            command_builder.finish()
+        };
+
+        let mut request_builder = RedisRequestBuilder::new(&mut builder);
+        request_builder.add_command(command_offset.as_union_value());
+        request_builder.add_callback_idx(callback_index);
+        request_builder.add_command_type(CommandOptions::Command);
+        let offset = request_builder.finish();
+        builder.finish_minimal(offset);
+        builder
     }
 
     fn write_message(
@@ -104,10 +111,11 @@ mod tests {
         request_type: RequestType,
         args_pointer: bool,
     ) {
-        let request = create_command_request(callback_index, args, request_type, args_pointer);
-        let message_length = request.compute_size() as usize;
-        write_length(buffer, message_length as u32);
-        buffer.extend_from_slice(&request.write_to_bytes().unwrap());
+        let builder = create_command_request(callback_index, args, request_type, args_pointer);
+
+        let data = builder.finished_data();
+        write_length(buffer, data.len() as u32);
+        buffer.extend_from_slice(builder.finished_data());
     }
 
     fn write_get(buffer: &mut BytesMut, callback_index: u32, key: &str, args_pointer: bool) {
@@ -137,23 +145,29 @@ mod tests {
     }
 
     fn assert_request(
-        request: &RedisRequest,
+        request: &Bytes,
         expected_type: RequestType,
         expected_index: u32,
         expected_args: Vec<String>,
         args_pointer: bool,
     ) {
-        assert_eq!(request.callback_idx, expected_index);
-        let Some(redis_request::Command::SingleCommand(ref command)) = request.command else {
+        let request = flatbuffers::root::<RedisRequest>(request).unwrap();
+        assert_eq!(request.callback_idx(), expected_index);
+        let Some(command) = request.command_as_command() else {
             panic!("expected single command");
         };
-        assert_eq!(command.request_type, expected_type.into());
+        assert_eq!(command.request_type(), expected_type.into());
         let args: Vec<String> = if args_pointer {
-            *unsafe { Box::from_raw(command.args_vec_pointer() as *mut Vec<String>) }
+            *unsafe {
+                Box::from_raw(
+                    command.args_as_args_vec_pointer().unwrap().pointer() as *mut Vec<String>
+                )
+            }
         } else {
             command
-                .args_array()
-                .args
+                .args_as_args_array()
+                .unwrap()
+                .args()
                 .iter()
                 .map(|chars| chars.to_string())
                 .collect()
@@ -169,6 +183,12 @@ mod tests {
             .collect()
     }
 
+    fn get_requests(rotating_buffer: &mut RotatingBuffer) -> Vec<Bytes> {
+        let mut requests = vec![];
+        rotating_buffer.get_requests(|request| requests.push(request));
+        requests
+    }
+
     #[rstest]
     fn get_right_sized_buffer() {
         let mut rotating_buffer = RotatingBuffer::new(128);
@@ -177,7 +197,7 @@ mod tests {
     }
 
     #[rstest]
-    fn get_requests(#[values(false, true)] args_pointer: bool) {
+    fn get_all_requests(#[values(false, true)] args_pointer: bool) {
         const BUFFER_SIZE: usize = 50;
         let mut rotating_buffer = RotatingBuffer::new(BUFFER_SIZE);
         write_get(rotating_buffer.current_buffer(), 100, "key", args_pointer);
@@ -188,7 +208,7 @@ mod tests {
             "value".to_string(),
             args_pointer,
         );
-        let requests = rotating_buffer.get_requests().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_eq!(requests.len(), 2);
         assert_request(
             &requests[0],
@@ -211,7 +231,7 @@ mod tests {
         const BUFFER_SIZE: usize = 50;
         let mut rotating_buffer = RotatingBuffer::new(BUFFER_SIZE);
         write_get(rotating_buffer.current_buffer(), 100, "key", args_pointer);
-        let requests = rotating_buffer.get_requests().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_request(
             &requests[0],
             RequestType::GetString,
@@ -226,7 +246,7 @@ mod tests {
             "value".to_string(),
             args_pointer,
         );
-        let requests = rotating_buffer.get_requests().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_eq!(requests.len(), 1);
         assert_request(
             &requests[0],
@@ -243,7 +263,7 @@ mod tests {
         let mut rotating_buffer = RotatingBuffer::new(BUFFER_SIZE as usize);
         write_get(rotating_buffer.current_buffer(), 100, "key", false);
 
-        let requests = rotating_buffer.get_requests().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_eq!(requests.len(), 1);
         assert_request(
             &requests[0],
@@ -277,7 +297,7 @@ mod tests {
         write_get(&mut second_request_bytes, 101, "key2", args_pointer);
         let buffer = rotating_buffer.current_buffer();
         buffer.extend_from_slice(&second_request_bytes[..NUM_OF_MESSAGE_BYTES]);
-        let requests = rotating_buffer.get_requests().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_eq!(requests.len(), 1);
         assert_request(
             &requests[0],
@@ -289,7 +309,7 @@ mod tests {
         let buffer = rotating_buffer.current_buffer();
         assert_eq!(buffer.len(), NUM_OF_MESSAGE_BYTES);
         buffer.extend_from_slice(&second_request_bytes[NUM_OF_MESSAGE_BYTES..]);
-        let requests = rotating_buffer.get_requests().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_eq!(requests.len(), 1);
         assert_request(
             &requests[0],
@@ -313,11 +333,11 @@ mod tests {
         let required_varint_length = u32::required_space(KEY_LENGTH as u32);
         assert!(required_varint_length > 1); // so we could split the write of the varint
         buffer.extend_from_slice(&request_bytes[..NUM_OF_LENGTH_BYTES]);
-        let requests = rotating_buffer.get_requests::<RedisRequest>().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_eq!(requests.len(), 0);
         let buffer = rotating_buffer.current_buffer();
         buffer.extend_from_slice(&request_bytes[NUM_OF_LENGTH_BYTES..]);
-        let requests = rotating_buffer.get_requests().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_eq!(requests.len(), 1);
         assert_request(
             &requests[0],
@@ -344,7 +364,7 @@ mod tests {
 
         let buffer = rotating_buffer.current_buffer();
         buffer.extend_from_slice(&request_bytes[..NUM_OF_LENGTH_BYTES]);
-        let requests = rotating_buffer.get_requests().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_eq!(requests.len(), 1);
         assert_request(
             &requests[0],
@@ -356,7 +376,7 @@ mod tests {
         let buffer = rotating_buffer.current_buffer();
         assert_eq!(buffer.len(), NUM_OF_LENGTH_BYTES);
         buffer.extend_from_slice(&request_bytes[NUM_OF_LENGTH_BYTES..]);
-        let requests = rotating_buffer.get_requests().unwrap();
+        let requests = get_requests(&mut rotating_buffer);
         assert_eq!(requests.len(), 1);
         assert_request(
             &requests[0],

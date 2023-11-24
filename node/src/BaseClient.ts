@@ -55,7 +55,9 @@ import {
     TimeoutError,
 } from "./Errors";
 import { Logger } from "./Logger";
-import { connection_request, redis_request, response } from "./ProtobufMessage";
+import * as connection_request from "./connection-request";
+import * as redis_request from "./redis-request";
+import * as response from "./response";
 
 /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
 type PromiseFunction = (value?: any) => void;
@@ -167,7 +169,7 @@ export class BaseClient {
             lastPos = reader.pos;
             let message = undefined;
             try {
-                message = response.Response.decodeDelimited(reader);
+                message = response.Response.getSizePrefixedRootAsResponse(buf);
             } catch (err) {
                 if (err instanceof RangeError) {
                     // Partial response received, more data is required
@@ -854,7 +856,7 @@ export class BaseClient {
      */
     protected createClientRequest(
         options: BaseClientConfiguration
-    ): connection_request.IConnectionRequest {
+    ): connection_request.ConnectionRequest {
         const readFrom = options.readFrom
             ? this.MAP_READ_FROM_STRATEGY[options.readFrom]
             : undefined;

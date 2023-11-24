@@ -1,0 +1,42 @@
+namespace connection_request;
+
+enum ReadFrom : int {
+  Primary = 0,
+  PreferReplica = 1,
+  LowestLatency = 2,
+  AZAffinity = 3,
+}
+
+enum TlsMode : int {
+  NoTls = 0,
+  SecureTls = 1,
+  InsecureTls = 2,
+}
+
+table NodeAddress {
+  host:string (required);
+  port:uint;
+}
+
+table AuthenticationInfo {
+  password:string  (required);
+  username:string;
+}
+
+table ConnectionRequest {
+  addresses:[NodeAddress] (required);
+  tls_mode:TlsMode;
+  cluster_mode_enabled:bool;
+  request_timeout:uint;
+  client_creation_timeout:uint;
+  read_from:ReadFrom;
+  connection_retry_strategy:ConnectionRetryStrategy;
+  authentication_info:AuthenticationInfo;
+  database_id:uint;
+}
+
+table ConnectionRetryStrategy {
+  number_of_retries:uint;
+  factor:uint;
+  exponent_base:uint;
+}
