@@ -17,12 +17,12 @@ mod socket_listener {
     use crate::utilities::mocks::{Mock, ServerMock};
 
     use super::*;
-    use babushka::redis_request::command::{Args, ArgsArray};
-    use babushka::redis_request::{Command, Transaction};
-    use babushka::response::{response, ConstantResponse, Response};
-    use protobuf::{EnumOrUnknown, Message};
+    use babushka::redis_request::redis_request::{Args, ArgsArray};
+    use babushka::redis_request::redis_request::{Command, Transaction};
+    use babushka::response::response;
+    use babushka::response::response::{ConstantResponse, Response};
     use redis::{Cmd, ConnectionAddr, Value};
-    use redis_request::{RedisRequest, RequestType};
+    use redis_request::redis_request::{RedisRequest, RequestType};
     use rstest::rstest;
     use std::mem::size_of;
     use tokio::{net::UnixListener, runtime::Builder};
@@ -612,7 +612,7 @@ mod socket_listener {
         let response = decode_response(&buffer, header_bytes, message_length as usize);
 
         assert_eq!(response.callback_idx, CALLBACK1_INDEX);
-        let Some(response::Value::RespPointer(pointer)) = response.value else {
+        let Some(response::RespPointer(pointer)) = response.value else {
             panic!("Unexpected response {:?}", response.value);
         };
         let pointer = pointer as *mut Value;

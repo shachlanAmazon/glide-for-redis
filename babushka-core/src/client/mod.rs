@@ -51,7 +51,7 @@ pub(super) fn get_redis_connection_info(
     match authentication_info {
         Some(info) => redis::RedisConnectionInfo {
             db: database_id as i64,
-            username: info.username().map(|str|str.to_string()),
+            username: info.username().map(|str| str.to_string()),
             password: Some(info.password().to_string()),
             use_resp3: false,
             ..Default::default()
@@ -72,7 +72,7 @@ pub(super) fn get_connection_info(
 ) -> redis::ConnectionInfo {
     let addr = if tls_mode != TlsMode::NoTls {
         redis::ConnectionAddr::TcpTls {
-            host: host,
+            host,
             port: get_port(port),
             insecure: tls_mode == TlsMode::InsecureTls,
             tls_params: None,
@@ -167,6 +167,7 @@ fn to_duration(time_in_millis: u32, default: Duration) -> Duration {
     }
 }
 
+#[allow(clippy::needless_lifetimes)]
 async fn create_cluster_client<'a>(
     request: ConnectionRequest<'a>,
 ) -> RedisResult<redis::cluster_async::ClusterConnection> {
@@ -249,8 +250,6 @@ fn sanitized_request_string(request: &ConnectionRequest) -> String {
     let tls_mode = request.tls_mode();
     let cluster_mode = request.cluster_mode_enabled();
     let request_timeout = format_non_zero_value("response timeout", request.request_timeout());
-    let client_creation_timeout =
-        format_non_zero_value("client creation timeout", request.client_creation_timeout());
     let database_id = format_non_zero_value("database ID", request.database_id());
     let rfr_strategy = request.read_from();
     let connection_retry_strategy = match &request.connection_retry_strategy() {
@@ -267,6 +266,7 @@ fn sanitized_request_string(request: &ConnectionRequest) -> String {
 }
 
 impl Client {
+    #[allow(clippy::needless_lifetimes)]
     pub async fn new<'a>(request: ConnectionRequest<'a>) -> Result<Self, ConnectionError> {
         const DEFAULT_CLIENT_CREATION_TIMEOUT: Duration = Duration::from_secs(10);
 
