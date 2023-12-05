@@ -1,0 +1,87 @@
+name: Benchmark test
+
+inputs:
+    language-flag:
+        description: "flag that tells the benchmark to run a certain language"
+        required: true
+        type: string
+
+runs:
+    using: "composite"
+
+    steps:
+        - uses: actions/checkout@v4
+            with:
+                submodules: recursive
+
+        - name: Start redis server
+            run: redis-server &
+
+        - name: Test
+            working-directory: ./benchmarks
+            run: ./install-and-test -no-tls -minimal -only-babushka -data 1 -concurrency 10 ${{ inputs.language-flag }}
+
+
+
+# on:
+#     push:
+#         branches: ["main"]
+#     pull_request:
+
+# permissions:
+#     contents: read
+
+# jobs:
+#     run-benchmark:
+#         timeout-minutes: 10
+#         runs-on: ubuntu-latest
+#         strategy:
+#             fail-fast: false
+#             matrix:
+#                 redis:
+#                     - 7.2.0
+
+#         steps:
+#             - uses: actions/checkout@v4
+#               with:
+#                   submodules: recursive
+
+#             - name: Install redis
+#               uses: ./.github/workflows/install-redis
+#               with:
+#                   redis-version: ${{ matrix.redis }}
+
+#             - name: Install protoc
+#               run: |
+#                   sudo apt update
+#                   sudo apt install protobuf-compiler
+
+#             - uses: dtolnay/rust-toolchain@stable
+#             - uses: Swatinem/rust-cache@v2
+
+#             - name: Set up dotnet
+#               uses: actions/setup-dotnet@v3
+#               with:
+#                   dotnet-version: 6.0.x
+
+#             - name: Set up JDK 11
+#               uses: actions/setup-java@v3
+#               with:
+#                   distribution: "temurin"
+#                   java-version: 11
+
+#             - name: Use Node.js 16.x
+#               uses: actions/setup-node@v3
+#               with:
+#                   node-version: 16.x
+
+#             - name: Install python
+#               run: |
+#                   yum install -y python3
+
+#             - name: Start redis server
+#               run: redis-server &
+
+#             - name: Test
+#               working-directory: ./benchmarks
+#               run: ./install-and-test -no-tls -minimal -only-babushka -data 1 -concurrency 10

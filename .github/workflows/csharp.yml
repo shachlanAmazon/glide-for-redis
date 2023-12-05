@@ -65,3 +65,15 @@ jobs:
             - uses: ./.github/workflows/lint-rust
               with:
                   cargo-toml-folder: ./csharp/lib
+
+    test-benchmark:
+        timeout-minutes: 10
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  submodules: recursive
+
+            - uses: ./.github/workflows/test-benchmark
+              with:
+                language-flag: -csharp

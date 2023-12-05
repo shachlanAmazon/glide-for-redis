@@ -142,3 +142,15 @@ jobs:
             - name: Test compatibility
               run: npm test -- -t "set and get flow works"
               working-directory: ./node
+
+    test-benchmark:
+        timeout-minutes: 10
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  submodules: recursive
+
+            - uses: ./.github/workflows/test-benchmark
+              with:
+                  language-flag: -node
