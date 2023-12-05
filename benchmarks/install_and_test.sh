@@ -44,7 +44,7 @@ function runPythonBenchmark(){
   echo "Starting Python benchmarks"
   cd ${BENCH_FOLDER}/python
   $pythonCommand -m pip install --quiet -r requirements.txt
-  $pythonCommand python_benchmark.py --resultsFile=../$1 --dataSize $2 --concurrentTasks $concurrentTasks --clients $chosenClients --host $host --clientCount $clientCount $tlsFlag $clusterFlag $portFlag
+  $pythonCommand python_benchmark.py --resultsFile=../$1 --dataSize $2 --concurrentTasks $concurrentTasks --clients $chosenClients --host $host --clientCount $clientCount $tlsFlag $clusterFlag $portFlag $minimalFlag
   # exit python virtualenv
   deactivate
   echo "done python benchmark"
@@ -58,14 +58,14 @@ function runNodeBenchmark(){
   cd ${BENCH_FOLDER}/node
   npm install
   npx tsc
-  npm run bench -- --resultsFile=../$1 --dataSize $2 --concurrentTasks $concurrentTasks --clients $chosenClients --host $host --clientCount $clientCount $tlsFlag $clusterFlag $portFlag
+  npm run bench -- --resultsFile=../$1 --dataSize $2 --concurrentTasks $concurrentTasks --clients $chosenClients --host $host --clientCount $clientCount $tlsFlag $clusterFlag $portFlag $minimalFlag
 }
 
 function runCSharpBenchmark(){
   cd ${BENCH_FOLDER}/csharp
   dotnet clean
   dotnet build --configuration Release
-  dotnet run --configuration Release --resultsFile=../$1 --dataSize $2 --concurrentTasks $concurrentTasks --clients $chosenClients --host $host --clientCount $clientCount $tlsFlag $portFlag
+  dotnet run --configuration Release --resultsFile=../$1 --dataSize $2 --concurrentTasks $concurrentTasks --clients $chosenClients --host $host --clientCount $clientCount $tlsFlag $portFlag $minimalFlag
 }
 
 function runRustBenchmark(){
@@ -75,7 +75,7 @@ function runRustBenchmark(){
     rustConcurrentTasks=$rustConcurrentTasks" --concurrentTasks "$value
   done
   cd ${BENCH_FOLDER}/rust
-  cargo run --release -- --resultsFile=../$1 --dataSize $2 $rustConcurrentTasks --host $host --clientCount $clientCount $tlsFlag $clusterFlag $portFlag
+  cargo run --release -- --resultsFile=../$1 --dataSize $2 $rustConcurrentTasks --host $host --clientCount $clientCount $tlsFlag $clusterFlag $portFlag $minimalFlag
 }
 
 function flushDB() {
@@ -213,13 +213,21 @@ do
             portFlag="--port "$2
             shift
             ;;
+        -minimal)
+            minimalFlag="--minimal"
+            ;;            
     esac
     shift
 done
 
 for currentDataSize in $dataSize
 do
-    fillDB $currentDataSize
+    if [ -z "$minimal" ];
+    then
+        echo "Minimal run, not filling database"
+    else 
+        fillDB $currentDataSize
+    fi
 
     if [ $runAllBenchmarks == 1 ] || [ $runPython == 1 ];
     then
@@ -249,8 +257,6 @@ do
         runRustBenchmark $rustResults $currentDataSize
     fi
 done
-
-
 
 flushDB
 
