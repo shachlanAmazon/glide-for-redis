@@ -8,12 +8,14 @@ on:
             - babushka-core/**
             - submodules/**
             - utils/cluster_manager.py
+            - ./**/*.rs
     pull_request:
         paths:
             - logger_core/**
             - babushka-core/**
             - submodules/**
             - utils/cluster_manager.py
+            - ./**/*.rs
 
 env:
     CARGO_TERM_COLOR: always

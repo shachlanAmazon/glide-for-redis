@@ -11,6 +11,7 @@ on:
             - .github/workflows/python.yml
             - .github/workflows/build-python-wrapper/action.yml
             - .github/workflows/install-shared-dependencies/action.yml
+            - ./**/*.py            
     pull_request:
         paths:
             - python/**
@@ -20,6 +21,7 @@ on:
             - .github/workflows/python.yml
             - .github/workflows/build-python-wrapper/action.yml
             - .github/workflows/install-shared-dependencies/action.yml
+            - ./**/*.py            
 
 permissions:
     contents: read

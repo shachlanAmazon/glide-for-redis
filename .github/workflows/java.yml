@@ -8,12 +8,14 @@ on:
             - submodules/**
             - "java/**"
             - ".github/workflows/java.yml"
+            - ./**/*.java
     pull_request:
         paths:
             - babushka-core/**
             - submodules/**
             - "java/**"
             - ".github/workflows/java.yml"
+            - ./**/*.java
 
 # Run only most latest job on a branch and cancel previous ones
 concurrency:

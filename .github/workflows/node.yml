@@ -11,6 +11,7 @@ on:
             - .github/workflows/node.yml
             - .github/workflows/build-node-wrapper/action.yml
             - .github/workflows/install-shared-dependencies/action.yml
+            - ./**/*.ts
     pull_request:
         paths:
             - babushka-core/src/**
@@ -20,6 +21,7 @@ on:
             - .github/workflows/node.yml
             - .github/workflows/build-node-wrapper/action.yml
             - .github/workflows/install-shared-dependencies/action.yml
+            - ./**/*.ts
 
 env:
     CARGO_TERM_COLOR: always
