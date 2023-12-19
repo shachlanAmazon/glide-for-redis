@@ -212,6 +212,7 @@ impl StandaloneClient {
         cmd: &redis::Cmd,
         response_policy: Option<ResponsePolicy>,
     ) -> RedisResult<Value> {
+        log_trace("StandaloneClient", "sending command to all nodes");
         let requests = self
             .inner
             .nodes
@@ -271,18 +272,25 @@ impl StandaloneClient {
     }
 
     pub async fn send_packed_command(&mut self, cmd: &redis::Cmd) -> RedisResult<Value> {
-        let Some(cmd_bytes) = Routable::command(cmd) else {
-            return self.send_request_to_single_node(cmd, false).await;
-        };
+        if let Some(command) = cmd.known_command() {
+            if command.is_all_nodes() {
+                let response_policy = command.response_policy();
+                return self.send_request_to_all_nodes(cmd, response_policy).await;
+            }
+            self.send_request_to_single_node(cmd, command.is_readonly())
+                .await
+        } else {
+            let Some(cmd_bytes) = Routable::command(cmd) else {
+                return self.send_request_to_single_node(cmd, false).await;
+            };
 
-        if RoutingInfo::is_all_nodes(cmd_bytes.as_slice()) {
-            log_trace("StandaloneClient", "sending command to all nodes");
-            let response_policy = ResponsePolicy::for_command(cmd_bytes.as_slice());
-            return self.send_request_to_all_nodes(cmd, response_policy).await;
+            if RoutingInfo::is_all_nodes(cmd_bytes.as_slice()) {
+                let response_policy = ResponsePolicy::for_command(cmd_bytes.as_slice());
+                return self.send_request_to_all_nodes(cmd, response_policy).await;
+            }
+            self.send_request_to_single_node(cmd, is_readonly_cmd(cmd_bytes.as_slice()))
+                .await
         }
-        log_trace("StandaloneClient", "sending single node command");
-        self.send_request_to_single_node(cmd, is_readonly_cmd(cmd_bytes.as_slice()))
-            .await
     }
 
     pub async fn send_packed_commands(

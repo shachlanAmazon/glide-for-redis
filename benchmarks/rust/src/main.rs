@@ -5,6 +5,7 @@ use babushka::{
 use clap::Parser;
 use futures::{self, future::join_all, stream, StreamExt};
 use rand::{thread_rng, Rng};
+use redis::{Cmd, KnownCommand};
 use serde_json::Value;
 use std::{
     cmp::max,
@@ -264,22 +265,20 @@ async fn perform_operation(
     buffer: &mut itoa::Buffer,
     data_size: usize,
 ) -> ChosenAction {
-    let mut cmd = redis::Cmd::new();
-    let action = if rand::thread_rng().gen_bool(PROB_GET) {
+    let (cmd, action) = if rand::thread_rng().gen_bool(PROB_GET) {
+        let mut cmd = Cmd::known_command(KnownCommand::Get);
         if rand::thread_rng().gen_bool(PROB_GET_EXISTING_KEY) {
-            cmd.arg("GET")
-                .arg(buffer.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)));
-            ChosenAction::GetExisting
+            cmd.arg(buffer.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)));
+            (cmd, ChosenAction::GetExisting)
         } else {
-            cmd.arg("GET")
-                .arg(buffer.format(thread_rng().gen_range(SIZE_SET_KEYSPACE..SIZE_GET_KEYSPACE)));
-            ChosenAction::GetNonExisting
+            cmd.arg(buffer.format(thread_rng().gen_range(SIZE_SET_KEYSPACE..SIZE_GET_KEYSPACE)));
+            (cmd, ChosenAction::GetNonExisting)
         }
     } else {
-        cmd.arg("SET")
-            .arg(buffer.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)))
+        let mut cmd = Cmd::known_command(KnownCommand::Set);
+        cmd.arg(buffer.format(thread_rng().gen_range(0..SIZE_SET_KEYSPACE)))
             .arg(generate_random_string(data_size));
-        ChosenAction::Set
+        (cmd, ChosenAction::Set)
     };
     connection.req_packed_command(&cmd, None).await.unwrap();
     action
